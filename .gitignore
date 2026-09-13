@@ -1,0 +1,139 @@
+# =========================================================
+# STWI Attendance & Payroll - Monorepo Git Ignore
+# =========================================================
+
+# ---------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------
+node_modules/
+**/node_modules/
+
+# ---------------------------------------------------------
+# Environment / secrets
+# ---------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.example.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.example.*
+
+# ---------------------------------------------------------
+# Build output
+# ---------------------------------------------------------
+dist/
+build/
+out/
+coverage/
+.next/
+.nuxt/
+.vite/
+*.tsbuildinfo
+
+# ---------------------------------------------------------
+# Logs
+# ---------------------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------
+# Temporary files
+# ---------------------------------------------------------
+.tmp/
+temp/
+tmp/
+*.tmp
+*.temp
+
+# ---------------------------------------------------------
+# OS files
+# ---------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------
+# IDE / Editors
+# ---------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+.idea/
+*.iml
+
+# ---------------------------------------------------------
+# Test / tooling caches
+# ---------------------------------------------------------
+.nyc_output/
+.eslintcache
+.cache/
+.parcel-cache/
+
+# ---------------------------------------------------------
+# Runtime generated files
+# ---------------------------------------------------------
+uploads/
+upload/
+storage/
+runtime/
+generated/
+exports/
+output/
+output_files/
+
+# ---------------------------------------------------------
+# Attendance / payroll temporary input files
+# ---------------------------------------------------------
+data/input/
+data/output/
+data/uploads/
+data/processed/
+
+# Don't accidentally commit employee source exports
+# Adjust these paths if you decide to version specific samples.
+attendance_uploads/
+processed_attendance/
+
+# ---------------------------------------------------------
+# Database local files
+# ---------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+
+# ---------------------------------------------------------
+# Prisma generated/client artifacts
+# ---------------------------------------------------------
+# Prisma schema and migrations SHOULD remain tracked.
+# Only ignore generated/local artifacts.
+.prisma/
+**/.prisma/
+
+# ---------------------------------------------------------
+# Archives generated during development
+# ---------------------------------------------------------
+*.zip
+*.tar
+*.gz
+*.7z
+
+# ---------------------------------------------------------
+# Personal/local test files
+# ---------------------------------------------------------
+*.local
+*.bak
+*.backup
+
+# ---------------------------------------------------------
+# Excel temporary lock files
+# ---------------------------------------------------------
+~$*.xlsx
+~$*.xls

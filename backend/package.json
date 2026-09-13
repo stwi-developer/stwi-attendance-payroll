@@ -1,0 +1,44 @@
+{
+  "name": "attendance-payroll-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "lint": "eslint \"src/**/*.ts\" \"prisma/**/*.ts\""
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.11",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.0.11",
+    "@nestjs/jwt": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.11",
+    "@prisma/client": "^6.19.3",
+    "bcrypt": "^6.0.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "exceljs": "^4.4.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.10",
+    "@nestjs/schematics": "^11.0.7",
+    "@nestjs/testing": "^11.0.11",
+    "@types/bcrypt": "^6.0.0",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.15.21",
+    "eslint": "^9.35.0",
+    "prisma": "^6.19.3",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

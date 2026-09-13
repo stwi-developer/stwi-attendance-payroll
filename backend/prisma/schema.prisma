@@ -1,0 +1,341 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CEO
+  HR
+  JUNIOR_HR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  PROCESSING
+  REVIEW
+  FINALIZED
+  REOPENED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  STWI_LEAVE
+  HALF_DAY
+  HOLIDAY
+  WEEK_OFF
+  MANUAL_REVIEW
+}
+
+enum ManualReviewType {
+  MISSING_CHECKIN
+  MISSING_CHECKOUT
+  AMBIGUOUS_LEAVE
+  EMPLOYEE_MISMATCH
+  UNEXPECTED_DURATION
+  OTHER
+}
+
+enum ManualReviewStatus {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
+enum SecurityDepositMethod {
+  FULL
+  EMI_3_MONTHS
+}
+
+enum SecurityDepositStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         UserRole
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  auditLogs          AuditLog[]
+  reviews            ManualReview[] @relation("ReviewAssignee")
+  payrollRunsCreated PayrollRun[]   @relation("PayrollRunCreatedBy")
+}
+
+model Department {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  employees Employee[]
+}
+
+model Designation {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  employees Employee[]
+}
+
+model Employee {
+  id            String         @id @default(cuid())
+  employeeCode  String         @unique
+  name          String
+  email         String?
+  joiningDate   DateTime?
+  status        EmployeeStatus @default(ACTIVE)
+  departmentId  String?
+  designationId String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  department          Department?                  @relation(fields: [departmentId], references: [id])
+  designation         Designation?                 @relation(fields: [designationId], references: [id])
+  salaryHistory       EmployeeSalary[]
+  attendance          AttendanceRecord[]
+  leaveEvents         LeaveEvent[]
+  payrolls            PayrollResult[]
+  reviews             ManualReview[]
+  deposits            SecurityDeposit[]
+  depositTransactions SecurityDepositTransaction[]
+  auditLogs           AuditLog[]
+}
+
+model EmployeeSalary {
+  id            String   @id @default(cuid())
+  employeeId    String
+  effectiveFrom DateTime
+  grossSalary   Decimal  @db.Decimal(12, 2)
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, effectiveFrom])
+}
+
+model PayrollRun {
+  id          String           @id @default(cuid())
+  year        Int
+  month       Int
+  status      PayrollRunStatus @default(DRAFT)
+  createdById String
+  createdAt   DateTime         @default(now())
+  processedAt DateTime?
+  finalizedAt DateTime?
+  reopenedAt  DateTime?
+
+  createdBy      User               @relation("PayrollRunCreatedBy", fields: [createdById], references: [id])
+  files          AttendanceFile[]
+  attendance     AttendanceRecord[]
+  leaveEvents    LeaveEvent[]
+  payrollResults PayrollResult[]
+  manualReviews  ManualReview[]
+  deposits       SecurityDeposit[]
+
+  @@unique([year, month])
+}
+
+model AttendanceFile {
+  id           String   @id @default(cuid())
+  payrollRunId String
+  originalName String
+  employeeCode String?
+  fileHash     String?
+  status       String
+  uploadedAt   DateTime @default(now())
+  errorMessage String?  @db.Text
+
+  payrollRun PayrollRun         @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  records    AttendanceRecord[]
+
+  @@index([payrollRunId, employeeCode])
+}
+
+model AttendanceRecord {
+  id               String           @id @default(cuid())
+  payrollRunId     String
+  employeeId       String
+  attendanceFileId String?
+  workDate         DateTime         @db.Date
+  firstCheckIn     DateTime?
+  lastCheckOut     DateTime?
+  workedHours      Decimal?         @db.Decimal(6, 2)
+  sourceStatus     String?          @db.VarChar(255)
+  status           AttendanceStatus
+  isLate           Boolean          @default(false)
+  lateMinutes      Int              @default(0)
+  leaveFraction    Decimal?         @db.Decimal(4, 2)
+  isHoliday        Boolean          @default(false)
+  isWeekOff        Boolean          @default(false)
+  manualNotes      String?          @db.Text
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  payrollRun     PayrollRun      @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee       Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  attendanceFile AttendanceFile? @relation(fields: [attendanceFileId], references: [id], onDelete: SetNull)
+  leaveEvent     LeaveEvent?
+
+  @@unique([payrollRunId, employeeId, workDate])
+  @@index([employeeId, workDate])
+  @@index([payrollRunId, status])
+}
+
+model LeaveEvent {
+  id                 String   @id @default(cuid())
+  payrollRunId       String
+  employeeId         String
+  attendanceRecordId String   @unique
+  leaveFraction      Decimal  @db.Decimal(4, 2)
+  leaveType          String
+  approved           Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  payrollRun       PayrollRun       @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee         Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  attendanceRecord AttendanceRecord @relation(fields: [attendanceRecordId], references: [id], onDelete: Cascade)
+}
+
+model RuleDefinition {
+  id            String    @id @default(cuid())
+  key           String
+  value         String
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  description   String?   @db.Text
+  createdAt     DateTime  @default(now())
+
+  @@index([key, effectiveFrom])
+}
+
+model PayrollResult {
+  id                   String   @id @default(cuid())
+  payrollRunId         String
+  employeeId           String
+  grossSalary          Decimal  @db.Decimal(12, 2)
+  calendarDays         Int
+  weekOffDays          Decimal  @db.Decimal(6, 2)
+  holidayDays          Decimal  @db.Decimal(6, 2)
+  paidLeaveAllowance   Decimal  @db.Decimal(6, 2)
+  stwiLeaveDays        Decimal  @db.Decimal(6, 2)
+  lateMarks            Int
+  lateLeaveDeduction   Decimal  @db.Decimal(6, 2)
+  excessLeaveDeduction Decimal  @db.Decimal(6, 2)
+  doubleDeductionLeave Decimal  @db.Decimal(6, 2)
+  penalty              Decimal  @db.Decimal(12, 2)
+  securityDeposit      Decimal  @db.Decimal(12, 2)
+  ptax                 Decimal  @db.Decimal(12, 2)
+  otherDeductions      Decimal  @db.Decimal(12, 2)
+  payableAmount        Decimal  @db.Decimal(12, 2)
+  ruleSnapshot         Json
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([payrollRunId, employeeId])
+}
+
+model ManualReview {
+  id                   String             @id @default(cuid())
+  payrollRunId         String
+  employeeId           String?
+  type                 ManualReviewType
+  status               ManualReviewStatus @default(OPEN)
+  description          String             @db.Text
+  resolution           String?            @db.Text
+  penaltyAmount        Decimal?           @db.Decimal(12, 2)
+  doubleDeductionLeave Boolean            @default(false)
+  assignedToId         String?
+  createdAt            DateTime           @default(now())
+  resolvedAt           DateTime?
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee   Employee?  @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  assignedTo User?      @relation("ReviewAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([payrollRunId, status])
+}
+
+model SecurityDeposit {
+  id                 String                @id @default(cuid())
+  payrollRunId       String
+  employeeId         String
+  triggerReason      String
+  previousSalary     Decimal               @db.Decimal(12, 2)
+  currentSalary      Decimal               @db.Decimal(12, 2)
+  requiredDeposit    Decimal               @db.Decimal(12, 2)
+  alreadyHeld        Decimal               @db.Decimal(12, 2)
+  additionalRequired Decimal               @db.Decimal(12, 2)
+  method             SecurityDepositMethod
+  installmentCount   Int                   @default(1)
+  installmentAmount  Decimal               @db.Decimal(12, 2)
+  status             SecurityDepositStatus @default(ACTIVE)
+  createdAt          DateTime              @default(now())
+  completedAt        DateTime?
+
+  payrollRun   PayrollRun                   @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee     Employee                     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  transactions SecurityDepositTransaction[]
+
+  @@index([employeeId, status])
+}
+
+model SecurityDepositTransaction {
+  id                String   @id @default(cuid())
+  employeeId        String
+  securityDepositId String
+  payrollRunId      String
+  installmentNumber Int
+  amount            Decimal  @db.Decimal(12, 2)
+  transactionDate   DateTime
+  note              String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  employee        Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  securityDeposit SecurityDeposit @relation(fields: [securityDepositId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, transactionDate])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  employeeId String?
+  action     String
+  entityType String
+  entityId   String
+  beforeJson Json?
+  afterJson  Json?
+  createdAt  DateTime @default(now())
+
+  user     User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}

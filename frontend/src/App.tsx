@@ -38,7 +38,7 @@ function RunDetail(){
   const[attPage,setAttPage]=useState(1);
   const[revPage,setRevPage]=useState(1);
   const[payPage,setPayPage]=useState(1);
-  const[pageSize,setPageSize]=useState(25);
+  const[pageSize,setPageSize]=useState(100);
   const[attFilter,setAttFilter]=useState({search:'',status:'',late:'',leave:'',holiday:'',weekOff:'',manualReview:'',dateFrom:'',dateTo:''});
   const[revFilter,setRevFilter]=useState({status:'OPEN',type:'',search:'',penaltyPresent:'',doubleDeductionLeave:''});
   const[payFilter,setPayFilter]=useState({search:'',hasLate:'',hasLeave:'',hasPenalty:'',hasPtax:'',hasSecurityDeposit:'',minGross:'',maxGross:'',minPayable:'',maxPayable:''});
@@ -263,29 +263,37 @@ function RunDetail(){
     <section className="panel">
       <div className="panel-head"><h3>Payroll Review</h3><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPayPage(1)}}/></div>
       <div className="filters"><input placeholder="Employee" value={payFilter.search} onChange={e=>setPayFilter({...payFilter,search:e.target.value})}/><select value={payFilter.hasLate} onChange={e=>setPayFilter({...payFilter,hasLate:e.target.value})}><option value="">Late: All</option><option value="true">Late</option><option value="false">No Late</option></select><select value={payFilter.hasLeave} onChange={e=>setPayFilter({...payFilter,hasLeave:e.target.value})}><option value="">Leave: All</option><option value="true">Has Leave</option><option value="false">No Leave</option></select><input placeholder="Min payable" type="number" value={payFilter.minPayable} onChange={e=>setPayFilter({...payFilter,minPayable:e.target.value})}/><input placeholder="Max payable" type="number" value={payFilter.maxPayable} onChange={e=>setPayFilter({...payFilter,maxPayable:e.target.value})}/><button onClick={()=>setPayFilter({search:'',hasLate:'',hasLeave:'',hasPenalty:'',hasPtax:'',hasSecurityDeposit:'',minGross:'',maxGross:'',minPayable:'',maxPayable:''})}>Clear</button></div>
-      {payroll?.data.length?<table><thead><tr><th>Employee</th><th>Gross</th><th>Late</th><th>Leave Ded.</th><th>P.Tax</th><th>Deposit</th><th>Other</th><th>Payable</th><th>Action</th></tr></thead><tbody>{payroll.data.map(r=><tr key={r.id}><td>{r.employee.name}<small>{r.employee.employeeCode}</small></td><td>{currency(r.grossSalary)}</td><td>{r.lateMarks}</td><td>{currency(Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave))}</td><td>{currency(r.ptax)}</td><td>{currency(r.securityDeposit)}</td><td>{currency(r.otherDeductions)}</td><td>{currency(r.payableAmount)}</td>
-      <td><button onClick={async()=>{const method=window.confirm('OK = FULL, Cancel = EMI (3 months)');await action('deposit',()=>api.setDepositMethod(id!,r.employeeId,method?'FULL':'EMI_3_MONTHS'))}}>Deposit</button> 
-      <button
-  onClick={() => {
-    if (
-      window.confirm(
-        'Undo the selected security deposit for this employee?'
-      )
-    ) {
-      void action(
-        'reset deposit',
-        () =>
-          api.resetDepositMethod(
-            id!,
-            r.employeeId
-          ),
-      );
-    }
-  }}
->
-  Undo Deposit
-</button>
-      <button onClick={async()=>{const amount=window.prompt('Other deduction',String(r.otherDeductions||0));if(amount!==null)await action('deduction',()=>api.setOtherDeduction(id!,r.employeeId,Number(amount)))}}>Other</button></td></tr>)}</tbody></table>:<div className="empty">Calculate payroll after processing and resolving reviews.</div>}
+      {payroll?.data.length?<div className="table-scroll"><table><thead><tr>
+        <th>Employee</th><th>Working Days</th><th>Monthly Payment</th><th>Per Day</th><th>SD Deduction</th><th>Security Deposit</th><th>Leave</th><th>Penalty</th><th>P.Tax</th><th>Payable AMT</th><th>Deduction Leave</th><th>Half Day</th><th>Late Mark</th><th>Paid Leave</th><th>Double Deduction Leave</th><th>Total Leave</th><th>Join Date</th><th>Renewal Date</th><th>Deposit</th><th>Details</th><th>Action</th>
+      </tr></thead><tbody>{payroll.data.map((r:any)=>{
+        const trace=r.ruleSnapshot?.calculationTrace||{};
+        const deductionLeave=Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave);
+        const halfDay=Number(r.halfDayCount||0);
+        const depositDetails = Number(r.heldSecurityDeposit||0) > 0 ? currency(r.heldSecurityDeposit) : '—';
+        return <tr key={r.id}>
+          <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}</small></td>
+          <td>{r.workingDays}</td>
+          <td>{currency(r.grossSalary)}</td>
+          <td>{currency(r.dailySalary)}</td>
+          <td>{currency(r.securityDeposit)}</td>
+          <td>{currency(r.securityDeposit)}</td>
+          <td>{currency(r.leaveDeductionAmount)}</td>
+          <td>{currency(r.penalty)}</td>
+          <td>{currency(r.ptax)}</td>
+          <td><strong>{currency(r.payableAmount)}</strong></td>
+          <td>{Number(deductionLeave)}</td>
+          <td>{halfDay}</td>
+          <td>{r.lateMarks}</td>
+          <td>{Number(r.paidLeaveAllowance)}</td>
+          <td>{Number(r.doubleDeductionLeave)}</td>
+          <td>{Number(r.totalLeave)}</td>
+          <td>{r.employee.joiningDate?formatDate(r.employee.joiningDate.slice(0,10)):'—'}</td>
+          <td>{r.renewalDate?'—':'—'}</td>
+          <td>{depositDetails}</td>
+          <td><small>{trace ? `Gross ${currency(r.grossSalary)} | Leave ${Number(trace.leaveUsed ?? r.stwiLeaveDays)} | Late ${r.lateMarks} | Paid ${Number(r.paidLeaveAllowance)} | P.Tax ${currency(r.ptax)}${Number(r.otherDeductions)>0?` | Other ${currency(r.otherDeductions)}`:''}` : '—'}</small></td>
+          <td><button onClick={async()=>{const method=window.confirm('OK = FULL, Cancel = EMI (3 months)');await action('deposit',()=>api.setDepositMethod(id!,r.employeeId,method?'FULL':'EMI_3_MONTHS'))}}>Deposit</button> <button onClick={()=>{if(window.confirm('Undo the selected security deposit for this employee?')) void action('reset deposit',()=>api.resetDepositMethod(id!,r.employeeId))}}>Undo</button> <button onClick={async()=>{const amount=window.prompt('Other deduction',String(r.otherDeductions||0));if(amount!==null)await action('deduction',()=>api.setOtherDeduction(id!,r.employeeId,Number(amount)))}}>Other</button></td>
+        </tr>;
+      })}</tbody></table></div>:<div className="empty">Calculate payroll after processing and resolving reviews.</div>}
       <PaginationControls pagination={payroll?.pagination} onChange={setPayPage}/>
     </section>
 

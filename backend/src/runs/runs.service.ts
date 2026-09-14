@@ -41,7 +41,7 @@ function asAttendanceDate(value: any): Date | null {
   }
 
   const text = String(value).trim();
-  const m = text.match(/^(\\d{1,2})[-\\/ ]([A-Za-z]{3,9})[-\\/ ](\\d{4})$/);
+  const m = text.match(/^(\d{1,2})[-\/ ]([A-Za-z]{3,9})[-\/ ](\d{4})$/);
   if (m) {
     const months: Record<string, number> = {
       jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
@@ -295,10 +295,33 @@ export class RunsService {
         continue;
       }
 
+      const monthRows = parsed.rows.filter((row) =>
+        row.date &&
+        row.date.getUTCFullYear() === run.year &&
+        row.date.getUTCMonth() + 1 === run.month,
+      );
+      if (!monthRows.length) {
+        await this.prisma.attendanceFile.update({
+          where: { id: attendanceFile.id },
+          data: { status: 'ERROR', errorMessage: 'No attendance rows for this payroll month were found in the file.' },
+        });
+        out.push({ file: file.originalname, status: 'ERROR', employeeCode, error: 'No attendance rows for this payroll month were found in the file.' });
+        continue;
+      }
+
       // A fresh upload for the same employee/month is the new source of truth.
-      // Remove attendance records that came from an older imported source file,
-      // while leaving genuine manual-entry records (attendanceFileId = null)
-      // untouched.
+      // Before importing it, clear every run-scoped record belonging to this
+      // employee so a replacement Excel file can never inherit old attendance,
+      // reviews, or payroll from a previous upload. Other employees are untouched.
+      await this.prisma.payrollResult.deleteMany({
+        where: { payrollRunId: runId, employeeId: employee.id },
+      });
+      await this.prisma.manualReview.deleteMany({
+        where: { payrollRunId: runId, employeeId: employee.id },
+      });
+
+      // Remove attendance records that came from older imported source files,
+      // while leaving no stale source data for this employee.
       const oldFiles = await this.prisma.attendanceFile.findMany({
         where: {
           payrollRunId: runId,
@@ -329,22 +352,26 @@ export class RunsService {
         });
       }
 
-      // Reviews created by earlier automatic imports are rebuilt from the
-      // current source file below. Keep manual/penalty-type reviews intact.
-      await this.prisma.manualReview.deleteMany({
-        where: {
-          payrollRunId: runId,
-          employeeId: employee.id,
-          status: 'OPEN',
-          type: { in: ['MISSING_CHECKIN', 'AMBIGUOUS_LEAVE'] },
-        },
+      // Manual rows from an earlier version of this run are also stale when a
+      // fresh employee workbook is uploaded. Keep employee data isolated.
+      const remainingRunRecords = await this.prisma.attendanceRecord.findMany({
+        where: { payrollRunId: runId, employeeId: employee.id },
+        select: { id: true },
       });
+      if (remainingRunRecords.length) {
+        await this.prisma.leaveEvent.deleteMany({
+          where: { attendanceRecordId: { in: remainingRunRecords.map((r) => r.id) } },
+        });
+        await this.prisma.attendanceRecord.deleteMany({
+          where: { id: { in: remainingRunRecords.map((r) => r.id) } },
+        });
+      }
 
       try {
         const minHalf = await this.ruleNumber('half_day_min_hours', 4);
         const maxHalf = await this.ruleNumber('half_day_max_hours', 5.5);
         let imported = 0;
-        for (const row of parsed.rows) {
+        for (const row of monthRows) {
           const workDate = row.date;
           if (!workDate) continue;
           if (workDate.getUTCFullYear() !== run.year || workDate.getUTCMonth() + 1 !== run.month) continue;
@@ -446,10 +473,15 @@ export class RunsService {
     if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
     const file = await this.prisma.attendanceFile.findFirst({ where: { id: fileId, payrollRunId: runId } });
     if (!file) throw new NotFoundException('Attendance file not found');
-    const records = await this.prisma.attendanceRecord.findMany({ where: { attendanceFileId: fileId }, select: { id: true } });
+    const records = await this.prisma.attendanceRecord.findMany({ where: { attendanceFileId: fileId }, select: { id: true, employeeId: true } });
+    const employeeIds = [...new Set(records.map((x) => x.employeeId))];
     if (records.length) await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: { in: records.map((x) => x.id) } } });
     await this.prisma.attendanceRecord.deleteMany({ where: { attendanceFileId: fileId } });
     await this.prisma.attendanceFile.delete({ where: { id: fileId } });
+    if (employeeIds.length) {
+      await this.prisma.payrollResult.deleteMany({ where: { payrollRunId: runId, employeeId: { in: employeeIds } } });
+      await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, employeeId: { in: employeeIds } } });
+    }
     await this.audit.log({ userId, action: 'DELETE_ATTENDANCE_FILE', entityType: 'AttendanceFile', entityId: fileId, afterJson: { runId, originalName: file.originalName } });
     return { deleted: true, id: fileId };
   }
@@ -629,8 +661,6 @@ const totalHoursIdx = findCol(headers, [
   'Hours',
 ]);
 
-    const hoursIdx = payableHoursIdx >= 0 ? payableHoursIdx : totalHoursIdx;
-
     const statusIdx = findCol(headers, ['Status', 'Attendance Status']);
     const firstIdx = findCol(headers, [
       'First Check-In',
@@ -707,8 +737,15 @@ const totalHoursIdx = findCol(headers, [
 
     await this.prisma.payrollRun.update({ where: { id: runId }, data: { status: 'PROCESSING' } });
 
+    const importedSourceRows = await this.prisma.attendanceRecord.findMany({
+      where: { payrollRunId: runId, attendanceFileId: { not: null } },
+      select: { employeeId: true },
+      distinct: ['employeeId'],
+    });
+    const sourceEmployeeIds = importedSourceRows.map((r) => r.employeeId);
+
     const employees = await this.prisma.employee.findMany({
-      where: { status: 'ACTIVE' },
+      where: { id: { in: sourceEmployeeIds }, status: 'ACTIVE' },
       include: {
         salaryHistory: {
           where: { effectiveFrom: { lte: new Date(Date.UTC(run.year, run.month, 31, 23, 59, 59)) } },
@@ -718,7 +755,7 @@ const totalHoursIdx = findCol(headers, [
       },
     });
 
-    const importedCount = await this.prisma.attendanceRecord.count({ where: { payrollRunId: runId } });
+    const importedCount = await this.prisma.attendanceRecord.count({ where: { payrollRunId: runId, attendanceFileId: { not: null } } });
     if (!importedCount) {
       throw new BadRequestException('No attendance records were imported from the uploaded files. Check the Excel format and employee IDs.');
     }
@@ -904,8 +941,16 @@ const totalHoursIdx = findCol(headers, [
     if (openReviews) throw new BadRequestException(`Resolve all ${openReviews} open Manual Review item(s) before calculating payroll.`);
 
     const rules = await this.rulesSnapshot(run.year, run.month);
+    const sourceEmployeeRows = await this.prisma.attendanceRecord.findMany({
+      where: { payrollRunId: runId, attendanceFileId: { not: null } },
+      select: { employeeId: true },
+      distinct: ['employeeId'],
+    });
+    const sourceEmployeeIds = sourceEmployeeRows.map((r) => r.employeeId);
+    if (!sourceEmployeeIds.length) throw new BadRequestException('No uploaded attendance records are available for payroll calculation.');
+
     const employees = await this.prisma.employee.findMany({
-      where: { status: 'ACTIVE' },
+      where: { id: { in: sourceEmployeeIds }, status: 'ACTIVE' },
       include: {
         salaryHistory: {
           where: { effectiveFrom: { lte: new Date(Date.UTC(run.year, run.month, 31, 23, 59, 59)) } },
@@ -1075,7 +1120,36 @@ const totalHoursIdx = findCol(headers, [
       this.prisma.payrollResult.findMany({ where, include: { employee: true }, orderBy: { employee: { name: 'asc' } }, skip, take: pageSize }),
       this.prisma.payrollResult.count({ where }),
     ]);
-    return paged(data, total, page, pageSize);
+
+    const ids = data.map((r) => r.employeeId);
+    const attendanceRows = ids.length
+      ? await this.prisma.attendanceRecord.findMany({ where: { payrollRunId: runId, employeeId: { in: ids } }, select: { employeeId: true, status: true, leaveFraction: true } })
+      : [];
+    const byEmployee = new Map<string, any>();
+    for (const row of attendanceRows) {
+      const current = byEmployee.get(row.employeeId) ?? { halfDayCount: 0 };
+      if (row.status === 'HALF_DAY' || Number(row.leaveFraction ?? 0) === 0.5) current.halfDayCount += 1;
+      byEmployee.set(row.employeeId, current);
+    }
+
+    const enriched = data.map((r) => {
+      const trace: any = r.ruleSnapshot && typeof r.ruleSnapshot === 'object' ? (r.ruleSnapshot as any).calculationTrace : undefined;
+      const dailySalary = Number(trace?.dailySalary ?? Number(r.grossSalary) / Math.max(1, Number(r.calendarDays)));
+      const deductionLeave = Number(r.lateLeaveDeduction) + Number(r.excessLeaveDeduction) + Number(r.doubleDeductionLeave);
+      const leaveDeductionAmount = money(dailySalary * deductionLeave);
+      const heldSecurityDeposit = Number(r.securityDeposit);
+      return {
+        ...r,
+        workingDays: Number(r.calendarDays) - Number(r.weekOffDays) - Number(r.holidayDays),
+        dailySalary,
+        leaveDeductionAmount,
+        halfDayCount: byEmployee.get(r.employeeId)?.halfDayCount ?? 0,
+        totalLeave: Number(r.stwiLeaveDays) + Number(r.lateLeaveDeduction),
+        heldSecurityDeposit,
+        renewalDate: null,
+      };
+    });
+    return paged(enriched, total, page, pageSize);
   }
 
   async setOtherDeduction(userId: string, runId: string, employeeId: string, amount: number) {
@@ -1196,10 +1270,10 @@ const daily =
           employeeCode: record.employee.employeeCode,
           employeeName: record.employee.name,
           lateMarks: [],
-          stwiLeaves: [],
-          halfDays: [],
+          leaves: [],
         });
       }
+
       const item = {
         date: dateKey(record.workDate),
         checkIn: record.firstCheckIn ? record.firstCheckIn.toISOString() : null,
@@ -1208,36 +1282,16 @@ const daily =
         sourceStatus: record.sourceStatus,
         leaveFraction: Number(record.leaveFraction ?? 0),
       };
-      const s = byEmployee.get(record.employeeId);
-      if (record.isLate) s.lateMarks.push(item);
 
-      const source = String(record.sourceStatus ?? '').toLowerCase();
-      const fraction = Number(record.leaveFraction ?? 0);
-
-      // STWI Leave summary must reflect only rows whose Zoho Status actually
-      // contains "STWI Leave".
-      if (source.includes('stwi leave') && fraction > 0) {
-        s.stwiLeaves.push(item);
-      }
-
-      // Half-day summary includes all 0.5-day attendance/absence rows,
-      // including "0.5 day Present, 0.5 day Absent".
-      if (fraction === 0.5) {
-        s.halfDays.push(item);
-      }
+      const employee = byEmployee.get(record.employeeId);
+      if (record.isLate) employee.lateMarks.push(item);
+      if (Number(record.leaveFraction ?? 0) > 0) employee.leaves.push(item);
     }
 
-    const employees = Array.from(byEmployee.values()).map((s: any) => ({
-      ...s,
-      lateMarkCount: s.lateMarks.length,
-      stwiLeaveDays: money(s.stwiLeaves.reduce((sum: number, x: any) => sum + Number(x.leaveFraction || 0), 0)),
-      halfDayCount: s.halfDays.length,
-      totalLeaveDays: money(
-        s.stwiLeaves.reduce((sum: number, x: any) => sum + Number(x.leaveFraction || 0), 0) +
-        s.halfDays
-          .filter((x: any) => !s.stwiLeaves.some((l: any) => l.date === x.date))
-          .reduce((sum: number, x: any) => sum + Number(x.leaveFraction || 0), 0),
-      ),
+    const employees = Array.from(byEmployee.values()).map((employee: any) => ({
+      ...employee,
+      lateMarkCount: employee.lateMarks.length,
+      leaveDays: money(employee.leaves.reduce((sum: number, row: any) => sum + Number(row.leaveFraction || 0), 0)),
     }));
 
     return {
@@ -1246,9 +1300,7 @@ const daily =
       month: run.month,
       totals: {
         lateMarkCount: employees.reduce((sum, e) => sum + e.lateMarkCount, 0),
-        stwiLeaveDays: money(employees.reduce((sum, e) => sum + e.stwiLeaveDays, 0)),
-        halfDayCount: employees.reduce((sum, e) => sum + e.halfDayCount, 0),
-        totalLeaveDays: money(employees.reduce((sum, e) => sum + e.totalLeaveDays, 0)),
+        leaveDays: money(employees.reduce((sum, e) => sum + e.leaveDays, 0)),
       },
       employees,
     };
@@ -1388,7 +1440,7 @@ const daily =
     traceSheet.addRow(['Employee ID','Employee','Gross Salary','Daily Salary','Leave Used','Paid Leave','Excess Leave','Late Marks','Late Leave','Double Deduction','Total Deduction Leave','Attendance Deduction','Penalty','P.Tax','Security Deposit','Other Deduction','Payable']);
     for (const r of payroll) {
       const trace = (r.ruleSnapshot as any)?.calculationTrace || {};
-      traceSheet.addRow([r.employee.employeeCode,r.employee.name,Number(r.grossSalary),Number(trace.dailySalary || Number(r.grossSalary)/30),Number(trace.leaveUsed || r.stwiLeaveDays),Number(trace.paidLeaveAllowance || r.paidLeaveAllowance),Number(trace.excessLeaveDeduction || r.excessLeaveDeduction),r.lateMarks,Number(trace.lateLeaveDeduction || r.lateLeaveDeduction),Number(trace.doubleDeductionLeave || r.doubleDeductionLeave),Number(trace.totalDeductionLeave || (Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave))),Number(trace.attendanceDeduction || 0),Number(r.penalty),Number(r.ptax),Number(r.securityDeposit),Number(r.otherDeductions),Number(r.payableAmount)]);
+      traceSheet.addRow([r.employee.employeeCode,r.employee.name,Number(r.grossSalary),Number(trace.dailySalary || Number(r.grossSalary)/Math.max(1, Number(r.calendarDays))),Number(trace.leaveUsed || r.stwiLeaveDays),Number(trace.paidLeaveAllowance || r.paidLeaveAllowance),Number(trace.excessLeaveDeduction || r.excessLeaveDeduction),r.lateMarks,Number(trace.lateLeaveDeduction || r.lateLeaveDeduction),Number(trace.doubleDeductionLeave || r.doubleDeductionLeave),Number(trace.totalDeductionLeave || (Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave))),Number(trace.attendanceDeduction || 0),Number(r.penalty),Number(r.ptax),Number(r.securityDeposit),Number(r.otherDeductions),Number(r.payableAmount)]);
     }
     this.styleHeader(traceSheet, 1);
     for (const cell of ['C','D','L','M','N','O','P','Q']) traceSheet.getColumn(cell).numFmt = '₹#,##0.00';

@@ -43,6 +43,10 @@ function RunDetail(){
   const[revFilter,setRevFilter]=useState({status:'OPEN',type:'',search:'',penaltyPresent:'',doubleDeductionLeave:''});
   const[payFilter,setPayFilter]=useState({search:'',hasLate:'',hasLeave:'',hasPenalty:'',hasPtax:'',hasSecurityDeposit:'',minGross:'',maxGross:'',minPayable:'',maxPayable:''});
   const[selectedEmployeeId,setSelectedEmployeeId]=useState('');
+  const[selectedPayrollEmployees,setSelectedPayrollEmployees]=useState<string[]>([]);
+  const[showSelectedPayroll,setShowSelectedPayroll]=useState(false);
+  const[payrollEditId,setPayrollEditId]=useState<string|null>(null);
+  const[payrollDrafts,setPayrollDrafts]=useState<Record<string,any>>({});
 
   const loadRun=async()=>{if(!id)return;try{setRun(await api.run(id));}catch(e){setError(errMessage(e))}};
   const loadAttendance=async()=>{if(!id)return;try{setAttendance(await api.attendance(id,{...attFilter,employeeId:selectedEmployeeId||undefined,page:attPage,pageSize}));}catch(e){setError(errMessage(e))}};
@@ -65,6 +69,46 @@ function RunDetail(){
 
   const employeeSummaries=summary?.employees||[];
   const visibleEmployeeSummaries=selectedEmployeeId ? employeeSummaries.filter((e:any)=>e.employeeId===selectedEmployeeId) : employeeSummaries;
+  const payrollRows = showSelectedPayroll
+    ? (payroll?.data || []).filter((r:any)=>selectedPayrollEmployees.includes(r.employeeId))
+    : (payroll?.data || []);
+  const payrollVisibleTotal = payrollRows.reduce((sum:number,r:any)=>sum+Number(r.payableAmount||0),0);
+  const payrollAllIds = employeeSummaries.map((e:any)=>e.employeeId);
+  const startPayrollEdit=(r:any)=>{
+    setPayrollEditId(r.id);
+    setPayrollDrafts(prev=>({...prev,[r.id]:{
+      workingDays:r.workingDays,
+      monthlyPayment:Number(r.grossSalary),
+      perDay:Number(r.dailySalary),
+      sdDeduction:Number(r.securityDeposit),
+      securityDeposit:Number(r.securityDeposit),
+      leave:Number(r.leaveDeductionAmount),
+      penalty:Number(r.penalty),
+      ptax:Number(r.ptax),
+      payableAmount:Number(r.payableAmount),
+      deductionLeave:Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave),
+      halfDay:Number(r.halfDayCount||0),
+      lateMark:Number(r.lateMarks),
+      paidLeave:Number(r.paidLeaveAllowance),
+      doubleDeductionLeave:Number(r.doubleDeductionLeave),
+      totalLeave:Number(r.totalLeave),
+      joinDate:r.joiningDate?r.joiningDate.slice(0,10):'',
+      renewalDate:r.renewalDate||'',
+      deposit:Number(r.heldSecurityDeposit||0),
+      details:r.ruleSnapshot?.manualOverrides?.details || '',
+      otherDeductions:Number(r.otherDeductions||0),
+    }}));
+  };
+  const payrollDraft=(r:any)=>payrollDrafts[r.id] || {
+    workingDays:r.workingDays, monthlyPayment:Number(r.grossSalary), perDay:Number(r.dailySalary),
+    sdDeduction:Number(r.securityDeposit), securityDeposit:Number(r.securityDeposit), leave:Number(r.leaveDeductionAmount),
+    penalty:Number(r.penalty), ptax:Number(r.ptax), payableAmount:Number(r.payableAmount),
+    deductionLeave:Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave),
+    halfDay:Number(r.halfDayCount||0), lateMark:Number(r.lateMarks), paidLeave:Number(r.paidLeaveAllowance),
+    doubleDeductionLeave:Number(r.doubleDeductionLeave), totalLeave:Number(r.totalLeave),
+    joinDate:r.joiningDate?r.joiningDate.slice(0,10):'', renewalDate:r.renewalDate||'',
+    deposit:Number(r.heldSecurityDeposit||0), details:r.ruleSnapshot?.manualOverrides?.details || '', otherDeductions:Number(r.otherDeductions||0),
+  };
 
   return <div>
     <div className="page-head">
@@ -86,7 +130,7 @@ function RunDetail(){
 
     <section className="panel">
       <h3>Attendance Upload</h3>
-      <input type="file" multiple accept=".xls,.xlsx,.csv" onChange={e=>setFiles(Array.from(e.target.files||[]))}/>
+      <input type="file" multiple accept=".zip,.xls,.xlsx,.csv" onChange={e=>setFiles(Array.from(e.target.files||[]))}/>
       <table><thead><tr><th>File</th><th>Status</th><th>Employee</th><th>Error</th><th>Action</th></tr></thead><tbody>
         {(run.files||[]).map((f:AttendanceFile)=><tr key={f.id}><td>{f.originalName}</td><td>{f.status}</td><td>{f.employeeCode||'—'}</td><td>{f.errorMessage||'—'}</td><td>{run.status!=='FINALIZED'&&<ConfirmButton onConfirm={()=>action('delete file',()=>api.deleteRunFile(id!,f.id))}>Delete</ConfirmButton>}</td></tr>)}
       </tbody></table>
@@ -95,7 +139,7 @@ function RunDetail(){
     <section className="panel">
       <div className="panel-head"><h3>Employee View</h3><span className="muted">Select one employee to reduce the run screen clutter.</span></div>
       <div className="employee-switcher">
-        <button className={!selectedEmployeeId?'active':''} onClick={()=>{setSelectedEmployeeId('');setAttPage(1);setRevPage(1);setPayPage(1)}}>All Employees</button>
+        <button className={!selectedEmployeeId?'active':''} onClick={()=>{setSelectedEmployeeId('');setSelectedPayrollEmployees(payrollAllIds);setShowSelectedPayroll(false);setAttPage(1);setRevPage(1);setPayPage(1)}}>All Employees</button>
         {employeeSummaries.map((e:any)=><button key={e.employeeId} className={selectedEmployeeId===e.employeeId?'active':''} onClick={()=>{setSelectedEmployeeId(e.employeeId);setAttPage(1);setRevPage(1);setPayPage(1)}}>{e.employeeCode} — {e.employeeName}</button>)}
       </div>
     </section>
@@ -239,6 +283,23 @@ function RunDetail(){
     </section>
 
     <section className="panel">
+      <div className="panel-head">
+        <h3>Payroll Employee Selection</h3>
+        <div className="actions">
+          <label style={{display:'inline-flex',alignItems:'center',gap:6}}>
+            <input type="checkbox" checked={showSelectedPayroll} onChange={e=>setShowSelectedPayroll(e.target.checked)} />
+            Show selected only
+          </label>
+          <button onClick={()=>setSelectedPayrollEmployees(employeeSummaries.map((e:any)=>e.employeeId))}>Select All</button>
+          <button onClick={()=>setSelectedPayrollEmployees([])}>Clear</button>
+        </div>
+      </div>
+      <div className="employee-checkbox-grid">
+        {employeeSummaries.map((e:any)=><label key={e.employeeId} style={{display:'inline-flex',alignItems:'center',gap:6,marginRight:14,marginBottom:8}}>
+          <input type="checkbox" checked={selectedPayrollEmployees.includes(e.employeeId)} onChange={ev=>setSelectedPayrollEmployees(prev=>ev.target.checked?[...prev,e.employeeId]:prev.filter(x=>x!==e.employeeId))} />
+          {e.employeeCode} — {e.employeeName}
+        </label>)}
+      </div>
       <div className="panel-head"><h3>Payroll Calculation</h3><span className="muted">Click Calculate Payroll above after all Manual Reviews are resolved.</span></div>
       {payroll?.data.length ? payroll.data.map((r:any)=>{const trace=r.ruleSnapshot?.calculationTrace||{}; return <div className="calculation-card" key={`calc-${r.employeeId}`}>
         <strong>{r.employee.name} ({r.employee.employeeCode})</strong>
@@ -261,38 +322,113 @@ function RunDetail(){
     </section>
 
     <section className="panel">
-      <div className="panel-head"><h3>Payroll Review</h3><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPayPage(1)}}/></div>
-      <div className="filters"><input placeholder="Employee" value={payFilter.search} onChange={e=>setPayFilter({...payFilter,search:e.target.value})}/><select value={payFilter.hasLate} onChange={e=>setPayFilter({...payFilter,hasLate:e.target.value})}><option value="">Late: All</option><option value="true">Late</option><option value="false">No Late</option></select><select value={payFilter.hasLeave} onChange={e=>setPayFilter({...payFilter,hasLeave:e.target.value})}><option value="">Leave: All</option><option value="true">Has Leave</option><option value="false">No Leave</option></select><input placeholder="Min payable" type="number" value={payFilter.minPayable} onChange={e=>setPayFilter({...payFilter,minPayable:e.target.value})}/><input placeholder="Max payable" type="number" value={payFilter.maxPayable} onChange={e=>setPayFilter({...payFilter,maxPayable:e.target.value})}/><button onClick={()=>setPayFilter({search:'',hasLate:'',hasLeave:'',hasPenalty:'',hasPtax:'',hasSecurityDeposit:'',minGross:'',maxGross:'',minPayable:'',maxPayable:''})}>Clear</button></div>
-      {payroll?.data.length?<div className="table-scroll"><table><thead><tr>
+      <div className="panel-head">
+        <div>
+          <h3>Payroll Review</h3>
+          <span className="muted">Every payroll value shown here can be manually adjusted and saved for the selected employee.</span>
+        </div>
+        <PageSize value={pageSize} onChange={v=>{setPageSize(v);setPayPage(1)}}/>
+      </div>
+      <div className="stats-grid two-column-summary">
+        <div className="metric"><span>Employees Shown</span><strong>{payrollRows.length}</strong></div>
+        <div className="metric"><span>Total Final Payable</span><strong>{currency(payrollVisibleTotal)}</strong></div>
+      </div>
+      <div className="filters">
+        <input placeholder="Employee" value={payFilter.search} onChange={e=>setPayFilter({...payFilter,search:e.target.value})}/>
+        <select value={payFilter.hasLate} onChange={e=>setPayFilter({...payFilter,hasLate:e.target.value})}><option value="">Late: All</option><option value="true">Late</option><option value="false">No Late</option></select>
+        <select value={payFilter.hasLeave} onChange={e=>setPayFilter({...payFilter,hasLeave:e.target.value})}><option value="">Leave: All</option><option value="true">Has Leave</option><option value="false">No Leave</option></select>
+        <input placeholder="Min payable" type="number" value={payFilter.minPayable} onChange={e=>setPayFilter({...payFilter,minPayable:e.target.value})}/>
+        <input placeholder="Max payable" type="number" value={payFilter.maxPayable} onChange={e=>setPayFilter({...payFilter,maxPayable:e.target.value})}/>
+        <button onClick={()=>setPayFilter({search:'',hasLate:'',hasLeave:'',hasPenalty:'',hasPtax:'',hasSecurityDeposit:'',minGross:'',maxGross:'',minPayable:'',maxPayable:''})}>Clear</button>
+      </div>
+      {payrollRows.length?<div className="table-scroll"><table><thead><tr>
         <th>Employee</th><th>Working Days</th><th>Monthly Payment</th><th>Per Day</th><th>SD Deduction</th><th>Security Deposit</th><th>Leave</th><th>Penalty</th><th>P.Tax</th><th>Payable AMT</th><th>Deduction Leave</th><th>Half Day</th><th>Late Mark</th><th>Paid Leave</th><th>Double Deduction Leave</th><th>Total Leave</th><th>Join Date</th><th>Renewal Date</th><th>Deposit</th><th>Details</th><th>Action</th>
-      </tr></thead><tbody>{payroll.data.map((r:any)=>{
+      </tr></thead><tbody>{payrollRows.map((r:any)=>{
         const trace=r.ruleSnapshot?.calculationTrace||{};
-        const deductionLeave=Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave);
-        const halfDay=Number(r.halfDayCount||0);
-        const depositDetails = Number(r.heldSecurityDeposit||0) > 0 ? currency(r.heldSecurityDeposit) : '—';
-        return <tr key={r.id}>
-          <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}</small></td>
-          <td>{r.workingDays}</td>
-          <td>{currency(r.grossSalary)}</td>
-          <td>{currency(r.dailySalary)}</td>
-          <td>{currency(r.securityDeposit)}</td>
-          <td>{currency(r.securityDeposit)}</td>
-          <td>{currency(r.leaveDeductionAmount)}</td>
-          <td>{currency(r.penalty)}</td>
-          <td>{currency(r.ptax)}</td>
-          <td><strong>{currency(r.payableAmount)}</strong></td>
-          <td>{Number(deductionLeave)}</td>
-          <td>{halfDay}</td>
-          <td>{r.lateMarks}</td>
-          <td>{Number(r.paidLeaveAllowance)}</td>
-          <td>{Number(r.doubleDeductionLeave)}</td>
-          <td>{Number(r.totalLeave)}</td>
-          <td>{r.employee.joiningDate?formatDate(r.employee.joiningDate.slice(0,10)):'—'}</td>
-          <td>{r.renewalDate?'—':'—'}</td>
-          <td>{depositDetails}</td>
-          <td><small>{trace ? `Gross ${currency(r.grossSalary)} | Leave ${Number(trace.leaveUsed ?? r.stwiLeaveDays)} | Late ${r.lateMarks} | Paid ${Number(r.paidLeaveAllowance)} | P.Tax ${currency(r.ptax)}${Number(r.otherDeductions)>0?` | Other ${currency(r.otherDeductions)}`:''}` : '—'}</small></td>
-          <td><button onClick={async()=>{const method=window.confirm('OK = FULL, Cancel = EMI (3 months)');await action('deposit',()=>api.setDepositMethod(id!,r.employeeId,method?'FULL':'EMI_3_MONTHS'))}}>Deposit</button> <button onClick={()=>{if(window.confirm('Undo the selected security deposit for this employee?')) void action('reset deposit',()=>api.resetDepositMethod(id!,r.employeeId))}}>Undo</button> <button onClick={async()=>{const amount=window.prompt('Other deduction',String(r.otherDeductions||0));if(amount!==null)await action('deduction',()=>api.setOtherDeduction(id!,r.employeeId,Number(amount)))}}>Other</button></td>
-        </tr>;
+        const d=payrollDraft(r);
+        const editing=payrollEditId===r.id;
+        const setD=(key:string,value:any)=>setPayrollDrafts(prev=>({...prev,[r.id]:{...d,[key]:value}}));
+        return <>
+          <tr key={r.id}>
+            <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}</small></td>
+            <td>{Number(d.workingDays)}</td>
+            <td>{currency(d.monthlyPayment)}</td>
+            <td>{currency(d.perDay)}</td>
+            <td>{currency(d.sdDeduction)}</td>
+            <td>{currency(d.securityDeposit)}</td>
+            <td>{currency(d.leave)}</td>
+            <td>{currency(d.penalty)}</td>
+            <td>{currency(d.ptax)}</td>
+            <td><strong>{currency(d.payableAmount)}</strong></td>
+            <td>{Number(d.deductionLeave)}</td>
+            <td>{Number(d.halfDay)}</td>
+            <td>{Number(d.lateMark)}</td>
+            <td>{Number(d.paidLeave)}</td>
+            <td>{Number(d.doubleDeductionLeave)}</td>
+            <td>{Number(d.totalLeave)}</td>
+            <td>{d.joinDate?formatDate(d.joinDate):'—'}</td>
+            <td>{d.renewalDate?formatDate(d.renewalDate):'—'}</td>
+            <td>{currency(d.deposit)}</td>
+            <td><small>{d.details || `Gross ${currency(r.grossSalary)} | Leave ${Number(trace.leaveUsed ?? r.stwiLeaveDays)} | Late ${r.lateMarks} | Paid ${Number(r.paidLeaveAllowance)} | P.Tax ${currency(r.ptax)}`}</small></td>
+            <td>
+              <button onClick={()=>editing?setPayrollEditId(null):startPayrollEdit(r)}>{editing?'Close':'Edit'}</button>{' '}
+              <button onClick={async()=>{const method=window.confirm('OK = FULL, Cancel = EMI (3 months)');await action('deposit',()=>api.setDepositMethod(id!,r.employeeId,method?'FULL':'EMI_3_MONTHS'))}}>Deposit</button>{' '}
+              <button onClick={()=>{if(window.confirm('Undo the selected security deposit for this employee?')) void action('reset deposit',()=>api.resetDepositMethod(id!,r.employeeId))}}>Undo</button>
+            </td>
+          </tr>
+          {editing&&<tr key={`${r.id}-edit`}><td colSpan={21}>
+            <div className="payroll-editor">
+              <label>Working Days<input type="number" step="0.01" value={d.workingDays} onChange={e=>setD('workingDays',e.target.value)}/></label>
+              <label>Monthly Payment<input type="number" step="0.01" value={d.monthlyPayment} onChange={e=>setD('monthlyPayment',e.target.value)}/></label>
+              <label>Per Day<input type="number" step="0.01" value={d.perDay} onChange={e=>setD('perDay',e.target.value)}/></label>
+              <label>SD Deduction<input type="number" step="0.01" value={d.sdDeduction} onChange={e=>{const value=e.target.value;setPayrollDrafts(prev=>({...prev,[r.id]:{...d,sdDeduction:value,securityDeposit:value}}))}}/></label>
+              <label>Security Deposit<input type="number" step="0.01" value={d.securityDeposit} onChange={e=>setD('securityDeposit',e.target.value)}/></label>
+              <label>Leave<input type="number" step="0.01" value={d.leave} onChange={e=>setD('leave',e.target.value)}/></label>
+              <label>Penalty<input type="number" step="0.01" value={d.penalty} onChange={e=>setD('penalty',e.target.value)}/></label>
+              <label>P.Tax<input type="number" step="0.01" value={d.ptax} onChange={e=>setD('ptax',e.target.value)}/></label>
+              <label>Payable AMT<input type="number" step="0.01" value={d.payableAmount} onChange={e=>setD('payableAmount',e.target.value)}/></label>
+              <label>Deduction Leave<input type="number" step="0.01" value={d.deductionLeave} onChange={e=>setD('deductionLeave',e.target.value)}/></label>
+              <label>Half Day<input type="number" step="0.01" value={d.halfDay} onChange={e=>setD('halfDay',e.target.value)}/></label>
+              <label>Late Mark<input type="number" step="1" value={d.lateMark} onChange={e=>setD('lateMark',e.target.value)}/></label>
+              <label>Paid Leave<input type="number" step="0.01" value={d.paidLeave} onChange={e=>setD('paidLeave',e.target.value)}/></label>
+              <label>Double Deduction Leave<input type="number" step="0.01" value={d.doubleDeductionLeave} onChange={e=>setD('doubleDeductionLeave',e.target.value)}/></label>
+              <label>Total Leave<input type="number" step="0.01" value={d.totalLeave} onChange={e=>setD('totalLeave',e.target.value)}/></label>
+              <label>Join Date<input type="date" value={d.joinDate} onChange={e=>setD('joinDate',e.target.value)}/></label>
+              <label>Renewal Date<input type="date" value={d.renewalDate} onChange={e=>setD('renewalDate',e.target.value)}/></label>
+              <label>Deposit<input type="number" step="0.01" value={d.deposit} onChange={e=>setD('deposit',e.target.value)}/></label>
+              <label>Other Deduction<input type="number" step="0.01" value={d.otherDeductions} onChange={e=>setD('otherDeductions',e.target.value)}/></label>
+              <label className="wide">Details<input value={d.details} onChange={e=>setD('details',e.target.value)}/></label>
+              <div className="editor-actions">
+                <button onClick={async () => {
+                  await action('edit payroll', () => api.updatePayrollResult(id!, r.employeeId, {
+                    grossSalary: Number(d.monthlyPayment),
+                    paidLeaveAllowance: Number(d.paidLeave),
+                    lateMarks: Number(d.lateMark),
+                    lateLeaveDeduction: Number(d.deductionLeave),
+                    excessLeaveDeduction: 0,
+                    doubleDeductionLeave: Number(d.doubleDeductionLeave),
+                    penalty: Number(d.penalty),
+                    securityDeposit: Number(d.securityDeposit),
+                    ptax: Number(d.ptax),
+                    otherDeductions: Number(d.otherDeductions),
+                    payableAmount: Number(d.payableAmount),
+                    workingDays: Number(d.workingDays),
+                    dailySalary: Number(d.perDay),
+                    leaveDeductionAmount: Number(d.leave),
+                    halfDayCount: Number(d.halfDay),
+                    totalLeave: Number(d.totalLeave),
+                    renewalDate: d.renewalDate || null,
+                    heldSecurityDeposit: Number(d.deposit),
+                    details: d.details || '',
+                    joinDate: d.joinDate || null,
+                  }));
+                  setPayrollEditId(null);
+                }}>Save Changes</button>
+                <button onClick={() => setPayrollEditId(null)}>Cancel</button>
+              </div>
+            </div>
+          </td></tr>}
+        </>;
       })}</tbody></table></div>:<div className="empty">Calculate payroll after processing and resolving reviews.</div>}
       <PaginationControls pagination={payroll?.pagination} onChange={setPayPage}/>
     </section>

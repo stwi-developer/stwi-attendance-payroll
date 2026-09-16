@@ -8,6 +8,8 @@ import { SecurityDepositService } from '../security-deposit.service';
 import { parseBoolean, parsePagination, paged } from '../utils/pagination';
 
 const money = (n: number) => Math.round(n * 100) / 100;
+const hoursToLeaveFraction = (requiredHours: number, workedHours: number) =>
+  money(Math.max(0, (requiredHours - workedHours) / 8));
 const dayMs = 86400000;
 
 function asDate(value: any): Date | null {
@@ -390,6 +392,22 @@ export class RunsService {
           if (classification.type === 'full') status = 'STWI_LEAVE';
           if (classification.fraction === 0.5) status = 'HALF_DAY';
           if (classification.manual) { status = 'MANUAL_REVIEW'; manual = true; manualType = 'AMBIGUOUS_LEAVE'; }
+
+          // Minimum-work-hours rule:
+          //   * Normal working day requires 8 hours.
+          //   * Half-day working period requires 4 hours.
+          // Any shortfall becomes proportional leave (missing hours / 8),
+          // while preserving the source status shown in the UI. Full-day leave,
+          // weekends and holidays are exempt because no work is expected.
+          const baseLeaveFraction = classification.fraction || 0;
+          const requiredHours = classification.type === 'half_day' || classification.type === 'first_half' || classification.type === 'second_half'
+            ? 4
+            : 8;
+          const workedForThreshold = row.totalHours;
+          const shortfallLeave = (!holiday && !weekend && classification.type !== 'full' && workedForThreshold != null && workedForThreshold < requiredHours)
+            ? hoursToLeaveFraction(requiredHours, workedForThreshold)
+            : 0;
+          const leaveFraction = money(Math.min(1, baseLeaveFraction + shortfallLeave));
           const firstMin = row.firstCheckInMinutes ?? timeMinutes(first);
           const expected = expectedLoginForAttendance(row.status, classification.type, firstMin);
           let late = false;
@@ -409,7 +427,7 @@ export class RunsService {
             manual = true;
             manualType = 'MISSING_CHECKIN';
           }
-          const record = await this.prisma.attendanceRecord.upsert({ where: { payrollRunId_employeeId_workDate: { payrollRunId: runId, employeeId: employee.id, workDate } }, update: { attendanceFileId: attendanceFile.id, firstCheckIn: first, lastCheckOut: row.lastCheckOut, workedHours, sourceStatus: row.status, status, isLate: late, lateMinutes, leaveFraction: classification.fraction || null, isHoliday: holiday, isWeekOff: weekend }, create: { payrollRunId: runId, employeeId: employee.id, attendanceFileId: attendanceFile.id, workDate, firstCheckIn: first, lastCheckOut: row.lastCheckOut, workedHours, sourceStatus: row.status, status, isLate: late, lateMinutes, leaveFraction: classification.fraction || null, isHoliday: holiday, isWeekOff: weekend } });
+          const record = await this.prisma.attendanceRecord.upsert({ where: { payrollRunId_employeeId_workDate: { payrollRunId: runId, employeeId: employee.id, workDate } }, update: { attendanceFileId: attendanceFile.id, firstCheckIn: first, lastCheckOut: row.lastCheckOut, workedHours, sourceStatus: row.status, status, isLate: late, lateMinutes, leaveFraction: leaveFraction || null, isHoliday: holiday, isWeekOff: weekend }, create: { payrollRunId: runId, employeeId: employee.id, attendanceFileId: attendanceFile.id, workDate, firstCheckIn: first, lastCheckOut: row.lastCheckOut, workedHours, sourceStatus: row.status, status, isLate: late, lateMinutes, leaveFraction: leaveFraction || null, isHoliday: holiday, isWeekOff: weekend } });
           
           // The uploaded Excel row is now the source of truth for this date.
           // Remove any stale OPEN MISSING_CHECKIN review created by an earlier
@@ -419,7 +437,7 @@ export class RunsService {
             Boolean(first) ||
             holiday ||
             weekend ||
-            classification.fraction > 0 ||
+            leaveFraction > 0 ||
             status === 'HOLIDAY' ||
             status === 'WEEK_OFF' ||
             status === 'STWI_LEAVE' ||
@@ -439,7 +457,16 @@ export class RunsService {
             });
           }
           
-          if (classification.fraction > 0) await this.prisma.leaveEvent.upsert({ where: { attendanceRecordId: record.id }, update: { leaveFraction: classification.fraction, leaveType: classification.type === 'full' ? 'FULL_DAY' : 'HALF_DAY' }, create: { payrollRunId: runId, employeeId: employee.id, attendanceRecordId: record.id, leaveFraction: classification.fraction, leaveType: classification.type === 'full' ? 'FULL_DAY' : 'HALF_DAY' } });
+          if (leaveFraction > 0) {
+            const leaveType = classification.type === 'full'
+              ? 'FULL_DAY'
+              : (shortfallLeave > 0 ? 'HOUR_SHORTFALL' : 'HALF_DAY');
+            await this.prisma.leaveEvent.upsert({
+              where: { attendanceRecordId: record.id },
+              update: { leaveFraction, leaveType },
+              create: { payrollRunId: runId, employeeId: employee.id, attendanceRecordId: record.id, leaveFraction, leaveType },
+            });
+          }
           if (manual && manualType) await this.ensureReview(runId, employee.id, manualType, `Attendance review required for ${workDate.toISOString().slice(0,10)} from ${file.originalname}.`);
           imported++;
         }
@@ -1058,6 +1085,10 @@ const totalHoursIdx = findCol(headers, [
 
       const otherDeductions = existingResult ? Number(existingResult.otherDeductions) : 0;
       const payable = money(Math.max(0, gross - attendanceDeduction - penalty - ptax - securityDeposit - otherDeductions));
+      const existingSnapshot: any = existingResult?.ruleSnapshot && typeof existingResult.ruleSnapshot === 'object'
+        ? existingResult.ruleSnapshot
+        : {};
+      const manualOverrides = existingSnapshot.manualOverrides ?? {};
       const calculationTrace = {
         grossSalary: gross,
         dailySalary: money(dailySalary),
@@ -1078,8 +1109,8 @@ const totalHoursIdx = findCol(headers, [
 
       await this.prisma.payrollResult.upsert({
         where: { payrollRunId_employeeId: { payrollRunId: runId, employeeId: emp.id } },
-        update: { grossSalary: gross, calendarDays, weekOffDays, holidayDays, paidLeaveAllowance: rules.paid_leave_allowance, stwiLeaveDays: leaveUsed, lateMarks, lateLeaveDeduction, excessLeaveDeduction, doubleDeductionLeave, penalty, securityDeposit, ptax, otherDeductions, payableAmount: payable, ruleSnapshot: { ...rules, calculationTrace } },
-        create: { payrollRunId: runId, employeeId: emp.id, grossSalary: gross, calendarDays, weekOffDays, holidayDays, paidLeaveAllowance: rules.paid_leave_allowance, stwiLeaveDays: leaveUsed, lateMarks, lateLeaveDeduction, excessLeaveDeduction, doubleDeductionLeave, penalty, securityDeposit, ptax, otherDeductions, payableAmount: payable, ruleSnapshot: { ...rules, calculationTrace } },
+        update: { grossSalary: gross, calendarDays, weekOffDays, holidayDays, paidLeaveAllowance: rules.paid_leave_allowance, stwiLeaveDays: leaveUsed, lateMarks, lateLeaveDeduction, excessLeaveDeduction, doubleDeductionLeave, penalty, securityDeposit, ptax, otherDeductions, payableAmount: payable, ruleSnapshot: { ...rules, calculationTrace, manualOverrides } },
+        create: { payrollRunId: runId, employeeId: emp.id, grossSalary: gross, calendarDays, weekOffDays, holidayDays, paidLeaveAllowance: rules.paid_leave_allowance, stwiLeaveDays: leaveUsed, lateMarks, lateLeaveDeduction, excessLeaveDeduction, doubleDeductionLeave, penalty, securityDeposit, ptax, otherDeductions, payableAmount: payable, ruleSnapshot: { ...rules, calculationTrace, manualOverrides } },
       });
     }
 
@@ -1133,23 +1164,76 @@ const totalHoursIdx = findCol(headers, [
     }
 
     const enriched = data.map((r) => {
-      const trace: any = r.ruleSnapshot && typeof r.ruleSnapshot === 'object' ? (r.ruleSnapshot as any).calculationTrace : undefined;
-      const dailySalary = Number(trace?.dailySalary ?? Number(r.grossSalary) / Math.max(1, Number(r.calendarDays)));
+      const snapshot: any = r.ruleSnapshot && typeof r.ruleSnapshot === 'object' ? r.ruleSnapshot : {};
+      const trace: any = snapshot.calculationTrace;
+      const overrides: any = snapshot.manualOverrides ?? {};
+      const dailySalary = Number(overrides.dailySalary ?? trace?.dailySalary ?? Number(r.grossSalary) / Math.max(1, Number(r.calendarDays)));
       const deductionLeave = Number(r.lateLeaveDeduction) + Number(r.excessLeaveDeduction) + Number(r.doubleDeductionLeave);
-      const leaveDeductionAmount = money(dailySalary * deductionLeave);
-      const heldSecurityDeposit = Number(r.securityDeposit);
+      const leaveDeductionAmount = Number(overrides.leaveDeductionAmount ?? money(dailySalary * deductionLeave));
+      const heldSecurityDeposit = Number(overrides.heldSecurityDeposit ?? Number(r.securityDeposit));
       return {
         ...r,
-        workingDays: Number(r.calendarDays) - Number(r.weekOffDays) - Number(r.holidayDays),
+        workingDays: Number(overrides.workingDays ?? (Number(r.calendarDays) - Number(r.weekOffDays) - Number(r.holidayDays))),
         dailySalary,
         leaveDeductionAmount,
-        halfDayCount: byEmployee.get(r.employeeId)?.halfDayCount ?? 0,
-        totalLeave: Number(r.stwiLeaveDays) + Number(r.lateLeaveDeduction),
+        halfDayCount: Number(overrides.halfDayCount ?? (byEmployee.get(r.employeeId)?.halfDayCount ?? 0)),
+        totalLeave: Number(overrides.totalLeave ?? (Number(r.stwiLeaveDays) + Number(r.lateLeaveDeduction))),
         heldSecurityDeposit,
-        renewalDate: null,
+        renewalDate: overrides.renewalDate ?? null,
+        joiningDate: overrides.joinDate ?? r.employee.joiningDate,
       };
     });
     return paged(enriched, total, page, pageSize);
+  }
+
+  async updatePayrollResult(userId: string, runId: string, employeeId: string, body: any) {
+    const run = await this.prisma.payrollRun.findUnique({ where: { id: runId } });
+    if (!run) throw new NotFoundException('Payroll run not found');
+    if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
+
+    const result = await this.prisma.payrollResult.findUnique({
+      where: { payrollRunId_employeeId: { payrollRunId: runId, employeeId } },
+    });
+    if (!result) throw new NotFoundException('Payroll result not found');
+
+    const numericFields = [
+      'grossSalary', 'calendarDays', 'weekOffDays', 'holidayDays', 'paidLeaveAllowance',
+      'stwiLeaveDays', 'lateMarks', 'lateLeaveDeduction', 'excessLeaveDeduction',
+      'doubleDeductionLeave', 'penalty', 'securityDeposit', 'ptax', 'otherDeductions',
+      'payableAmount',
+    ] as const;
+    const data: any = {};
+    for (const field of numericFields) {
+      if (body[field] === undefined || body[field] === null || body[field] === '') continue;
+      const n = Number(body[field]);
+      if (!Number.isFinite(n)) throw new BadRequestException(`Invalid numeric value for ${field}`);
+      data[field] = field === 'calendarDays' || field === 'lateMarks' ? Math.max(0, Math.round(n)) : Math.max(0, money(n));
+    }
+
+    const snapshot: any = result.ruleSnapshot && typeof result.ruleSnapshot === 'object' ? result.ruleSnapshot : {};
+    const manualOverrides = { ...(snapshot.manualOverrides ?? {}) };
+    for (const field of ['workingDays', 'dailySalary', 'leaveDeductionAmount', 'totalLeave', 'heldSecurityDeposit', 'renewalDate', 'halfDayCount', 'details', 'joinDate']) {
+      if (body[field] !== undefined) manualOverrides[field] = body[field];
+    }
+    data.ruleSnapshot = { ...snapshot, manualOverrides, calculationTrace: snapshot.calculationTrace ?? {} };
+
+    // When the user edits deduction inputs but leaves payable blank, recalculate it.
+    if (body.payableAmount === undefined) {
+      const gross = Number(data.grossSalary ?? result.grossSalary);
+      const daily = Number(manualOverrides.dailySalary ?? (gross / Math.max(1, Number(data.calendarDays ?? result.calendarDays))));
+      const leaveDeduction = Number(data.lateLeaveDeduction ?? result.lateLeaveDeduction)
+        + Number(data.excessLeaveDeduction ?? result.excessLeaveDeduction)
+        + Number(data.doubleDeductionLeave ?? result.doubleDeductionLeave);
+      const leaveAmount = Number(manualOverrides.leaveDeductionAmount ?? (daily * leaveDeduction));
+      data.payableAmount = money(Math.max(0, gross - leaveAmount - Number(data.penalty ?? result.penalty) - Number(data.ptax ?? result.ptax) - Number(data.securityDeposit ?? result.securityDeposit) - Number(data.otherDeductions ?? result.otherDeductions)));
+    }
+
+    const updated = await this.prisma.payrollResult.update({ where: { id: result.id }, data });
+    await this.audit.log({
+      userId, employeeId, action: 'EDIT_PAYROLL_RESULT', entityType: 'PayrollResult', entityId: result.id,
+      beforeJson: result, afterJson: updated,
+    });
+    return updated;
   }
 
   async setOtherDeduction(userId: string, runId: string, employeeId: string, amount: number) {
@@ -1352,6 +1436,7 @@ const daily =
       first_half_login: (await this.prisma.ruleDefinition.findFirst({ where: { key: 'first_half_login', effectiveTo: null }, orderBy: { effectiveFrom: 'desc' } }))?.value ?? '14:30',
       ptax_threshold: ptaxThreshold,
       ptax_amount: await this.ruleNumber('ptax_amount', 200),
+      full_day_min_hours: await this.ruleNumber('full_day_min_hours', 8),
       half_day_min_hours: await this.ruleNumber('half_day_min_hours', 4),
       half_day_max_hours: await this.ruleNumber('half_day_max_hours', 5.5),
       double_deduction_leave_days: await this.ruleNumber('double_deduction_leave_days', 1),
@@ -1394,18 +1479,17 @@ const daily =
       const leaveUsed = Number(r.stwiLeaveDays);
       const deductionLeave = Number(r.lateLeaveDeduction) + Number(r.excessLeaveDeduction) + Number(r.doubleDeductionLeave);
       const workingDays = r.calendarDays - Number(r.weekOffDays) - Number(r.holidayDays);
-      const trace = (r.ruleSnapshot as any)?.calculationTrace;
+      const snap = (r.ruleSnapshot as any) || {};
+      const trace = snap.calculationTrace;
+      const overrides = snap.manualOverrides || {};
       paySheet.addRow([
         index + 1,
         r.employee.name,
-        workingDays,
-        Number(r.grossSalary),
+        Number(overrides.workingDays ?? workingDays),
+        Number(overrides.grossSalary ?? r.grossSalary),
         Number(r.securityDeposit),
         Number(r.securityDeposit),
-        money((
-  Number(r.grossSalary) /
-  Math.max(1, Number(r.calendarDays))
-) * deductionLeave),
+        Number(overrides.leaveDeductionAmount ?? money((Number(r.grossSalary) / Math.max(1, Number(r.calendarDays))) * deductionLeave)),
         Number(r.penalty),
         Number(r.ptax),
         Number(r.payableAmount),

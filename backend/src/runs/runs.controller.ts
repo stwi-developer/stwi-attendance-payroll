@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
+import JSZip from 'jszip';
 import { AuthGuard, AuthenticatedRequest } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -16,7 +17,32 @@ export class RunsController {
   @Get(':id') get(@Param('id') id: string) { return this.service.get(id); }
   @Delete(':id') @Roles('CEO','HR') removeRun(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.removeRun(req.user.id, id); }
   @Delete(':id/files/:fileId') @Roles('CEO','HR','JUNIOR_HR') deleteFile(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('fileId') fileId: string) { return this.service.deleteFile(req.user.id, id, fileId); }
-  @Post(':id/upload') @Roles('CEO','HR','JUNIOR_HR') @UseInterceptors(FilesInterceptor('files', 50)) upload(@Req() req: AuthenticatedRequest, @Param('id') id: string, @UploadedFiles() files: Express.Multer.File[]) { return this.service.uploadFiles(req.user.id, id, files); }
+  @Post(':id/upload')
+  @Roles('CEO','HR','JUNIOR_HR')
+  @UseInterceptors(FilesInterceptor('files', 50))
+  async upload(@Req() req: AuthenticatedRequest, @Param('id') id: string, @UploadedFiles() files: Express.Multer.File[]) {
+    const expanded: Express.Multer.File[] = [];
+    for (const file of files ?? []) {
+      if (!/\.zip$/i.test(file.originalname)) {
+        expanded.push(file);
+        continue;
+      }
+      const zip = await JSZip.loadAsync(file.buffer);
+      for (const [entryName, entry] of Object.entries(zip.files)) {
+        if (entry.dir || !/\.(xlsx|xls|csv)$/i.test(entryName)) continue;
+        const buffer = await entry.async('nodebuffer');
+        expanded.push({
+          ...file,
+          originalname: entryName.split('/').pop() || entryName,
+          buffer,
+          size: buffer.length,
+          mimetype: /\.csv$/i.test(entryName) ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+      }
+    }
+    if (!expanded.length) throw new Error('ZIP contains no .xlsx, .xls or .csv attendance files.');
+    return this.service.uploadFiles(req.user.id, id, expanded);
+  }
   @Post(':id/process') @Roles('CEO','HR','JUNIOR_HR') process(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.processRun(req.user.id, id); }
   @Post(':id/calculate') @Roles('CEO','HR','JUNIOR_HR') calculate(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.calculatePayroll(id, req.user.id); }
   @Get(':id/attendance-summary') attendanceSummary(@Param('id') id: string) { return this.service.attendanceSummary(id); }
@@ -28,6 +54,7 @@ export class RunsController {
   @Delete('/reviews/:reviewId') @Roles('CEO','HR') deleteReview(@Req() req: AuthenticatedRequest, @Param('reviewId') reviewId: string) { return this.service.deleteReview(req.user.id, reviewId); }
   @Patch('/reviews/:reviewId') @Roles('CEO','HR','JUNIOR_HR') resolveReview(@Req() req: AuthenticatedRequest, @Param('reviewId') reviewId: string, @Body() body: any) { return this.service.resolveReview(req.user.id, reviewId, body); }
   @Get(':id/payroll') payroll(@Param('id') id: string, @Query() query: any) { return this.service.payroll(id, query); }
+  @Patch(':id/payroll/:employeeId') @Roles('CEO','HR') updatePayrollResult(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('employeeId') employeeId: string, @Body() body: any) { return this.service.updatePayrollResult(req.user.id, id, employeeId, body); }
   @Patch(':id/payroll/:employeeId/other-deduction') @Roles('CEO','HR') setOtherDeduction(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('employeeId') employeeId: string, @Body() body: { amount: number }) { return this.service.setOtherDeduction(req.user.id, id, employeeId, Number(body.amount)); }
   @Patch(':id/payroll/:employeeId/security-deposit') @Roles('CEO','HR') setDepositMethod(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('employeeId') employeeId: string, @Body() body: { method: 'FULL'|'EMI_3_MONTHS' }) { return this.service.setDepositMethod(req.user.id, id, employeeId, body.method); }
   @Post(':id/finalize') @Roles('CEO','HR') finalize(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.finalize(req.user.id, id); }

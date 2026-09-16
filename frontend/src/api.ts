@@ -71,6 +71,7 @@ export const api = {
   deleteReview:(reviewId:string)=>request<any>(`/runs/reviews/${reviewId}`,{method:'DELETE'}),
   payroll:(id:string,params:Record<string,unknown>={})=>request<Page<PayrollResult>>(`/runs/${id}/payroll${query(params)}`),
   setDepositMethod:(runId:string,employeeId:string,method:string)=>request<any>(`/runs/${runId}/payroll/${employeeId}/security-deposit`,{method:'PATCH',body:JSON.stringify({method})}),
+  updatePayrollResult:(runId:string,employeeId:string,payload:any)=>request<any>(`/runs/${runId}/payroll/${employeeId}`,{method:'PATCH',body:JSON.stringify(payload)}),
   setOtherDeduction:(runId:string,employeeId:string,amount:number)=>request<any>(`/runs/${runId}/payroll/${employeeId}/other-deduction`,{method:'PATCH',body:JSON.stringify({amount})}),
   finalizeRun:(id:string)=>request<Run>(`/runs/${id}/finalize`,{method:'POST'}),
   reopenRun:(id:string)=>request<Run>(`/runs/${id}/reopen`,{method:'POST'}),

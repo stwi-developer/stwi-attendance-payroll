@@ -69,7 +69,7 @@ enum SecurityDepositStatus {
 }
 
 model User {
-  id           String     @id @default(cuid())
+  id           String     @id @default(cuid()) @db.VarChar(36)
   email        String     @unique
   passwordHash String
   name         String
@@ -84,7 +84,7 @@ model User {
 }
 
 model Department {
-  id        String     @id @default(cuid())
+  id        String     @id @default(cuid()) @db.VarChar(36)
   name      String     @unique
   active    Boolean    @default(true)
   createdAt DateTime   @default(now())
@@ -92,7 +92,7 @@ model Department {
 }
 
 model Designation {
-  id        String     @id @default(cuid())
+  id        String     @id @default(cuid()) @db.VarChar(36)
   name      String     @unique
   active    Boolean    @default(true)
   createdAt DateTime   @default(now())
@@ -100,14 +100,14 @@ model Designation {
 }
 
 model Employee {
-  id            String         @id @default(cuid())
-  employeeCode  String         @unique
+  id            String         @id @default(cuid()) @db.VarChar(36)
+  employeeCode  String         @unique @db.VarChar(100)
   name          String
   email         String?
   joiningDate   DateTime?
   status        EmployeeStatus @default(ACTIVE)
-  departmentId  String?
-  designationId String?
+  departmentId  String?        @db.VarChar(36)
+  designationId String?        @db.VarChar(36)
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -124,8 +124,8 @@ model Employee {
 }
 
 model EmployeeSalary {
-  id            String   @id @default(cuid())
-  employeeId    String
+  id            String   @id @default(cuid()) @db.VarChar(36)
+  employeeId    String   @db.VarChar(36)
   effectiveFrom DateTime
   grossSalary   Decimal  @db.Decimal(12, 2)
   notes         String?  @db.Text
@@ -137,11 +137,11 @@ model EmployeeSalary {
 }
 
 model PayrollRun {
-  id          String           @id @default(cuid())
+  id          String           @id @default(cuid()) @db.VarChar(36)
   year        Int
   month       Int
   status      PayrollRunStatus @default(DRAFT)
-  createdById String
+  createdById String           @db.VarChar(36)
   createdAt   DateTime         @default(now())
   processedAt DateTime?
   finalizedAt DateTime?
@@ -159,10 +159,10 @@ model PayrollRun {
 }
 
 model AttendanceFile {
-  id           String   @id @default(cuid())
-  payrollRunId String
+  id           String   @id @default(cuid()) @db.VarChar(36)
+  payrollRunId String   @db.VarChar(36)
   originalName String
-  employeeCode String?
+  employeeCode String?  @db.VarChar(100)
   fileHash     String?
   status       String
   uploadedAt   DateTime @default(now())
@@ -175,10 +175,10 @@ model AttendanceFile {
 }
 
 model AttendanceRecord {
-  id               String           @id @default(cuid())
-  payrollRunId     String
-  employeeId       String
-  attendanceFileId String?
+  id               String           @id @default(cuid()) @db.VarChar(36)
+  payrollRunId     String           @db.VarChar(36)
+  employeeId       String           @db.VarChar(36)
+  attendanceFileId String?          @db.VarChar(36)
   workDate         DateTime         @db.Date
   firstCheckIn     DateTime?
   lastCheckOut     DateTime?
@@ -205,10 +205,10 @@ model AttendanceRecord {
 }
 
 model LeaveEvent {
-  id                 String   @id @default(cuid())
-  payrollRunId       String
-  employeeId         String
-  attendanceRecordId String   @unique
+  id                 String   @id @default(cuid()) @db.VarChar(36)
+  payrollRunId       String   @db.VarChar(36)
+  employeeId         String   @db.VarChar(36)
+  attendanceRecordId String   @unique @db.VarChar(36)
   leaveFraction      Decimal  @db.Decimal(4, 2)
   leaveType          String
   approved           Boolean  @default(false)
@@ -220,7 +220,7 @@ model LeaveEvent {
 }
 
 model RuleDefinition {
-  id            String    @id @default(cuid())
+  id            String    @id @default(cuid()) @db.VarChar(36)
   key           String
   value         String
   effectiveFrom DateTime
@@ -232,9 +232,9 @@ model RuleDefinition {
 }
 
 model PayrollResult {
-  id                   String   @id @default(cuid())
-  payrollRunId         String
-  employeeId           String
+  id                   String   @id @default(cuid()) @db.VarChar(36)
+  payrollRunId         String   @db.VarChar(36)
+  employeeId           String   @db.VarChar(36)
   grossSalary          Decimal  @db.Decimal(12, 2)
   calendarDays         Int
   weekOffDays          Decimal  @db.Decimal(6, 2)
@@ -261,16 +261,16 @@ model PayrollResult {
 }
 
 model ManualReview {
-  id                   String             @id @default(cuid())
-  payrollRunId         String
-  employeeId           String?
+  id                   String             @id @default(cuid()) @db.VarChar(36)
+  payrollRunId         String             @db.VarChar(36)
+  employeeId           String?            @db.VarChar(36)
   type                 ManualReviewType
   status               ManualReviewStatus @default(OPEN)
   description          String             @db.Text
   resolution           String?            @db.Text
   penaltyAmount        Decimal?           @db.Decimal(12, 2)
   doubleDeductionLeave Boolean            @default(false)
-  assignedToId         String?
+  assignedToId         String?            @db.VarChar(36)
   createdAt            DateTime           @default(now())
   resolvedAt           DateTime?
 
@@ -282,9 +282,9 @@ model ManualReview {
 }
 
 model SecurityDeposit {
-  id                 String                @id @default(cuid())
-  payrollRunId       String?
-  employeeId         String
+  id                 String                @id @default(cuid()) @db.VarChar(36)
+  payrollRunId       String?               @db.VarChar(36)
+  employeeId         String                @db.VarChar(36)
   triggerReason      String
   previousSalary     Decimal               @db.Decimal(12, 2)
   currentSalary      Decimal               @db.Decimal(12, 2)
@@ -298,7 +298,7 @@ model SecurityDeposit {
   createdAt          DateTime              @default(now())
   completedAt        DateTime?
 
-  payrollRun   PayrollRun?                  @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  payrollRun   PayrollRun?                  @relation(fields: [payrollRunId], references: [id], onDelete: SetNull)
   employee     Employee                     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   transactions SecurityDepositTransaction[]
 
@@ -306,10 +306,10 @@ model SecurityDeposit {
 }
 
 model SecurityDepositTransaction {
-  id                String   @id @default(cuid())
-  employeeId        String
-  securityDepositId String
-  payrollRunId      String?
+  id                String   @id @default(cuid()) @db.VarChar(36)
+  employeeId        String   @db.VarChar(36)
+  securityDepositId String   @db.VarChar(36)
+  payrollRunId      String   @db.VarChar(36)
   installmentNumber Int
   amount            Decimal  @db.Decimal(12, 2)
   transactionDate   DateTime
@@ -323,12 +323,12 @@ model SecurityDepositTransaction {
 }
 
 model AuditLog {
-  id         String   @id @default(cuid())
-  userId     String?
-  employeeId String?
+  id         String   @id @default(cuid()) @db.VarChar(36)
+  userId     String?  @db.VarChar(36)
+  employeeId String?  @db.VarChar(36)
   action     String
-  entityType String
-  entityId   String
+  entityType String   @db.VarChar(100)
+  entityId   String   @db.VarChar(36)
   beforeJson Json?
   afterJson  Json?
   createdAt  DateTime @default(now())

@@ -1,6 +1,6 @@
 -- CreateTable
 CREATE TABLE `User` (
-    `id` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
     `email` VARCHAR(191) NOT NULL,
     `passwordHash` VARCHAR(191) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE `User` (
 
 -- CreateTable
 CREATE TABLE `Department` (
-    `id` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
     `active` BOOLEAN NOT NULL DEFAULT true,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -26,7 +26,7 @@ CREATE TABLE `Department` (
 
 -- CreateTable
 CREATE TABLE `Designation` (
-    `id` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
     `active` BOOLEAN NOT NULL DEFAULT true,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -37,14 +37,14 @@ CREATE TABLE `Designation` (
 
 -- CreateTable
 CREATE TABLE `Employee` (
-    `id` VARCHAR(191) NOT NULL,
-    `employeeCode` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `employeeCode` VARCHAR(100) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
     `email` VARCHAR(191) NULL,
     `joiningDate` DATETIME(3) NULL,
     `status` ENUM('ACTIVE', 'INACTIVE') NOT NULL DEFAULT 'ACTIVE',
-    `departmentId` VARCHAR(191) NULL,
-    `designationId` VARCHAR(191) NULL,
+    `departmentId` VARCHAR(36) NULL,
+    `designationId` VARCHAR(36) NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
@@ -54,8 +54,8 @@ CREATE TABLE `Employee` (
 
 -- CreateTable
 CREATE TABLE `EmployeeSalary` (
-    `id` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `employeeId` VARCHAR(36) NOT NULL,
     `effectiveFrom` DATETIME(3) NOT NULL,
     `grossSalary` DECIMAL(12, 2) NOT NULL,
     `notes` TEXT NULL,
@@ -67,11 +67,11 @@ CREATE TABLE `EmployeeSalary` (
 
 -- CreateTable
 CREATE TABLE `PayrollRun` (
-    `id` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
     `year` INTEGER NOT NULL,
     `month` INTEGER NOT NULL,
     `status` ENUM('DRAFT', 'PROCESSING', 'REVIEW', 'FINALIZED', 'REOPENED') NOT NULL DEFAULT 'DRAFT',
-    `createdById` VARCHAR(191) NOT NULL,
+    `createdById` VARCHAR(36) NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `processedAt` DATETIME(3) NULL,
     `finalizedAt` DATETIME(3) NULL,
@@ -83,10 +83,10 @@ CREATE TABLE `PayrollRun` (
 
 -- CreateTable
 CREATE TABLE `AttendanceFile` (
-    `id` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NOT NULL,
     `originalName` VARCHAR(191) NOT NULL,
-    `employeeCode` VARCHAR(191) NULL,
+    `employeeCode` VARCHAR(100) NULL,
     `fileHash` VARCHAR(191) NULL,
     `status` VARCHAR(191) NOT NULL,
     `uploadedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -98,10 +98,10 @@ CREATE TABLE `AttendanceFile` (
 
 -- CreateTable
 CREATE TABLE `AttendanceRecord` (
-    `id` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NOT NULL,
-    `attendanceFileId` VARCHAR(191) NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NOT NULL,
+    `employeeId` VARCHAR(36) NOT NULL,
+    `attendanceFileId` VARCHAR(36) NULL,
     `workDate` DATE NOT NULL,
     `firstCheckIn` DATETIME(3) NULL,
     `lastCheckOut` DATETIME(3) NULL,
@@ -125,10 +125,10 @@ CREATE TABLE `AttendanceRecord` (
 
 -- CreateTable
 CREATE TABLE `LeaveEvent` (
-    `id` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NOT NULL,
-    `attendanceRecordId` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NOT NULL,
+    `employeeId` VARCHAR(36) NOT NULL,
+    `attendanceRecordId` VARCHAR(36) NOT NULL,
     `leaveFraction` DECIMAL(4, 2) NOT NULL,
     `leaveType` VARCHAR(191) NOT NULL,
     `approved` BOOLEAN NOT NULL DEFAULT false,
@@ -140,7 +140,7 @@ CREATE TABLE `LeaveEvent` (
 
 -- CreateTable
 CREATE TABLE `RuleDefinition` (
-    `id` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
     `key` VARCHAR(191) NOT NULL,
     `value` VARCHAR(191) NOT NULL,
     `effectiveFrom` DATETIME(3) NOT NULL,
@@ -154,9 +154,9 @@ CREATE TABLE `RuleDefinition` (
 
 -- CreateTable
 CREATE TABLE `PayrollResult` (
-    `id` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NOT NULL,
+    `employeeId` VARCHAR(36) NOT NULL,
     `grossSalary` DECIMAL(12, 2) NOT NULL,
     `calendarDays` INTEGER NOT NULL,
     `weekOffDays` DECIMAL(6, 2) NOT NULL,
@@ -182,16 +182,16 @@ CREATE TABLE `PayrollResult` (
 
 -- CreateTable
 CREATE TABLE `ManualReview` (
-    `id` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NOT NULL,
+    `employeeId` VARCHAR(36) NULL,
     `type` ENUM('MISSING_CHECKIN', 'MISSING_CHECKOUT', 'AMBIGUOUS_LEAVE', 'EMPLOYEE_MISMATCH', 'UNEXPECTED_DURATION', 'OTHER') NOT NULL,
     `status` ENUM('OPEN', 'RESOLVED', 'REJECTED') NOT NULL DEFAULT 'OPEN',
     `description` TEXT NOT NULL,
     `resolution` TEXT NULL,
     `penaltyAmount` DECIMAL(12, 2) NULL,
     `doubleDeductionLeave` BOOLEAN NOT NULL DEFAULT false,
-    `assignedToId` VARCHAR(191) NULL,
+    `assignedToId` VARCHAR(36) NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `resolvedAt` DATETIME(3) NULL,
 
@@ -201,9 +201,9 @@ CREATE TABLE `ManualReview` (
 
 -- CreateTable
 CREATE TABLE `SecurityDeposit` (
-    `id` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NULL,
+    `employeeId` VARCHAR(36) NOT NULL,
     `triggerReason` VARCHAR(191) NOT NULL,
     `previousSalary` DECIMAL(12, 2) NOT NULL,
     `currentSalary` DECIMAL(12, 2) NOT NULL,
@@ -223,10 +223,10 @@ CREATE TABLE `SecurityDeposit` (
 
 -- CreateTable
 CREATE TABLE `SecurityDepositTransaction` (
-    `id` VARCHAR(191) NOT NULL,
-    `employeeId` VARCHAR(191) NOT NULL,
-    `securityDepositId` VARCHAR(191) NOT NULL,
-    `payrollRunId` VARCHAR(191) NOT NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `employeeId` VARCHAR(36) NOT NULL,
+    `securityDepositId` VARCHAR(36) NOT NULL,
+    `payrollRunId` VARCHAR(36) NOT NULL,
     `installmentNumber` INTEGER NOT NULL,
     `amount` DECIMAL(12, 2) NOT NULL,
     `transactionDate` DATETIME(3) NOT NULL,
@@ -239,12 +239,12 @@ CREATE TABLE `SecurityDepositTransaction` (
 
 -- CreateTable
 CREATE TABLE `AuditLog` (
-    `id` VARCHAR(191) NOT NULL,
-    `userId` VARCHAR(191) NULL,
-    `employeeId` VARCHAR(191) NULL,
+    `id` VARCHAR(36) NOT NULL,
+    `userId` VARCHAR(36) NULL,
+    `employeeId` VARCHAR(36) NULL,
     `action` VARCHAR(191) NOT NULL,
-    `entityType` VARCHAR(191) NOT NULL,
-    `entityId` VARCHAR(191) NOT NULL,
+    `entityType` VARCHAR(100) NOT NULL,
+    `entityId` VARCHAR(36) NOT NULL,
     `beforeJson` JSON NULL,
     `afterJson` JSON NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -303,7 +303,7 @@ ALTER TABLE `ManualReview` ADD CONSTRAINT `ManualReview_employeeId_fkey` FOREIGN
 ALTER TABLE `ManualReview` ADD CONSTRAINT `ManualReview_assignedToId_fkey` FOREIGN KEY (`assignedToId`) REFERENCES `User`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `SecurityDeposit` ADD CONSTRAINT `SecurityDeposit_payrollRunId_fkey` FOREIGN KEY (`payrollRunId`) REFERENCES `PayrollRun`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `SecurityDeposit` ADD CONSTRAINT `SecurityDeposit_payrollRunId_fkey` FOREIGN KEY (`payrollRunId`) REFERENCES `PayrollRun`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `SecurityDeposit` ADD CONSTRAINT `SecurityDeposit_employeeId_fkey` FOREIGN KEY (`employeeId`) REFERENCES `Employee`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

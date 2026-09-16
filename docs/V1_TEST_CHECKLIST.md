@@ -39,18 +39,27 @@
 - Missing check-in on a working day goes to Manual Review.
 
 ## Payroll
-- Daily salary = gross / 30.
+- Daily salary = gross / actual calendar days in month (August = gross / 31).
 - Paid leave allowance = 1.5 days.
 - Excess STWI leave = total STWI leave - 1.5 when positive.
 - Every 3 late marks = 1 leave deduction.
 - Remaining late marks remain visible.
 - Double Deduction Leave adds configured deduction day when ticked.
 - Penalty is entered from Manual Review.
-- Gross >= ₹15,000 => P.Tax ₹200.
-- Gross < ₹15,000 => P.Tax ₹0.
+- Gross > ₹12,000 => P.Tax ₹200.
+- Gross <= ₹12,000 => P.Tax ₹0.
 - Employees with missing salary are not produced in payroll results.
 
 ## Security deposit
+- New employee may record a historical deposit already taken at creation.
+- Historical held deposit is visible on Employee Detail and counts toward the target.
+- If held deposit equals salary, payroll finalization does not require FULL/EMI selection.
+- Equal-salary subsequent months still finalize without a deposit prompt.
+- Salary increase requires only the difference between current salary and held deposit.
+- Undo before finalization clears only the current-run deposit deduction.
+- Regularized existing deposit remains held across payroll runs.
+- FULL top-up completes the outstanding deposit and increases held balance.
+- EMI top-up keeps the selected installment amount across subsequent calculations.
 - New ₹30,000 employee => required deposit ₹30,000.
 - Full method => ₹30,000 one-time.
 - EMI method => ₹10,000 x 3.

@@ -1318,7 +1318,12 @@ const totalHoursIdx = findCol(headers, [
             alreadyHeld: held,
             additionalRequired: additional,
             installmentCount: deposit.method === 'EMI_3_MONTHS' ? 3 : 1,
-            installmentAmount: deposit.method === 'EMI_3_MONTHS' ? money(additional / 3) : additional,
+            installmentAmount:
+              deposit.method === 'EMI_3_MONTHS'
+                ? (Number(deposit.installmentAmount) > 0
+                    ? Number(deposit.installmentAmount)
+                    : money(additional / 3))
+                : additional,
           },
           include: { transactions: true },
         });

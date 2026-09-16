@@ -32,7 +32,7 @@ export class SecurityDepositService {
   }
 
   async getHeldAmount(employeeId: string): Promise<number> {
-  const [latestDeposit, aggregate] = await Promise.all([
+    const [latestDeposit, aggregate] = await Promise.all([
     this.prisma.securityDeposit.findFirst({
       where: { employeeId },
       orderBy: { createdAt: 'desc' },
@@ -45,17 +45,16 @@ export class SecurityDepositService {
       where: { employeeId },
       _sum: { amount: true },
     }),
-  ]);
+    ]);
 
-  const depositHeld = latestDeposit
+    const depositHeld = latestDeposit
     ? Number(latestDeposit.alreadyHeld)
     : 0;
 
-  const transactionHeld = aggregate._sum.amount
+    const transactionHeld = aggregate._sum.amount
     ? Number(aggregate._sum.amount)
     : 0;
 
-  return Math.max(depositHeld, transactionHeld);
-}
- 
+    return Math.max(depositHeld, transactionHeld);
+  }
 }

@@ -283,7 +283,7 @@ model ManualReview {
 
 model SecurityDeposit {
   id                 String                @id @default(cuid())
-  payrollRunId       String
+  payrollRunId       String?
   employeeId         String
   triggerReason      String
   previousSalary     Decimal               @db.Decimal(12, 2)
@@ -298,7 +298,7 @@ model SecurityDeposit {
   createdAt          DateTime              @default(now())
   completedAt        DateTime?
 
-  payrollRun   PayrollRun                   @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  payrollRun   PayrollRun?                  @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
   employee     Employee                     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   transactions SecurityDepositTransaction[]
 
@@ -309,7 +309,7 @@ model SecurityDepositTransaction {
   id                String   @id @default(cuid())
   employeeId        String
   securityDepositId String
-  payrollRunId      String
+  payrollRunId      String?
   installmentNumber Int
   amount            Decimal  @db.Decimal(12, 2)
   transactionDate   DateTime

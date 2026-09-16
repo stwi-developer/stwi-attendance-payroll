@@ -72,39 +72,137 @@ export class EmployeesService {
     return employee;
   }
 
-  async create(data: { employeeCode: string; name: string; email?: string; joiningDate?: string; departmentId?: string; designationId?: string; grossSalary: number; salaryEffectiveFrom?: string }) {
-    const employeeCode = data.employeeCode.trim();
-    const existing = await this.prisma.employee.findUnique({ where: { employeeCode } });
-    if (existing) throw new ConflictException('Employee code already exists');
 
-    const effectiveFrom = data.salaryEffectiveFrom ? new Date(data.salaryEffectiveFrom) : new Date();
-    const result = await this.prisma.$transaction(async (tx) => {
-      const employee = await tx.employee.create({
-        data: {
-          employeeCode,
-          name: data.name.trim(),
-          email: data.email?.trim().toLowerCase(),
-          joiningDate: data.joiningDate ? new Date(data.joiningDate) : undefined,
-          departmentId: data.departmentId || undefined,
-          designationId: data.designationId || undefined,
-        },
-      });
-      await tx.employeeSalary.create({ data: { employeeId: employee.id, effectiveFrom, grossSalary: data.grossSalary } });
-      return tx.employee.findUnique({
-        where: { id: employee.id },
-        include: {
-          department: true,
-          designation: true,
-          salaryHistory: { orderBy: { effectiveFrom: 'desc' } },
-          deposits: { include: { transactions: true } },
-        },
-      });
-    });
-    if (!result) throw new NotFoundException('Employee could not be created');
-    await this.audit.log({ action: 'CREATE', entityType: 'Employee', entityId: result.id, employeeId: result.id, afterJson: result });
-    return result;
+  async create(data: {
+  employeeCode: string;
+  name: string;
+  email?: string;
+  joiningDate?: string;
+  departmentId?: string;
+  designationId?: string;
+  grossSalary: number;
+  salaryEffectiveFrom?: string;
+  securityDepositAlreadyTaken?: number;
+}) {
+  const employeeCode = data.employeeCode.trim();
+
+  const existing = await this.prisma.employee.findUnique({
+    where: { employeeCode },
+  });
+
+  if (existing) {
+    throw new ConflictException('Employee code already exists');
   }
 
+  const grossSalary = Number(data.grossSalary);
+
+  if (!Number.isFinite(grossSalary) || grossSalary < 0) {
+    throw new ConflictException(
+      'Gross salary must be a valid non-negative amount.',
+    );
+  }
+
+  const initialDeposit = Math.max(
+    0,
+    Number(data.securityDepositAlreadyTaken ?? 0),
+  );
+
+  if (!Number.isFinite(initialDeposit)) {
+    throw new ConflictException(
+      'Security deposit already taken must be a valid amount.',
+    );
+  }
+
+  if (initialDeposit > grossSalary) {
+    throw new ConflictException(
+      'Security deposit already taken cannot exceed the current gross salary.',
+    );
+  }
+
+  const requiredDeposit = grossSalary;
+  const alreadyHeld = initialDeposit;
+
+  const additionalRequired = Math.max(
+    0,
+    requiredDeposit - alreadyHeld,
+  );
+
+  const effectiveFrom = data.salaryEffectiveFrom
+    ? new Date(data.salaryEffectiveFrom)
+    : new Date();
+
+  const result = await this.prisma.$transaction(async (tx) => {
+    const employee = await tx.employee.create({
+      data: {
+        employeeCode,
+        name: data.name.trim(),
+        email: data.email?.trim().toLowerCase(),
+        joiningDate: data.joiningDate
+          ? new Date(data.joiningDate)
+          : undefined,
+        departmentId: data.departmentId || undefined,
+        designationId: data.designationId || undefined,
+      },
+    });
+
+    await tx.employeeSalary.create({
+      data: {
+        employeeId: employee.id,
+        effectiveFrom,
+        grossSalary,
+      },
+    });
+
+    if (initialDeposit > 0) {
+      await tx.securityDeposit.create({
+        data: {
+          payrollRunId: null,
+          employeeId: employee.id,
+          triggerReason: 'INITIAL_DEPOSIT_ALREADY_TAKEN',
+          previousSalary: 0,
+          currentSalary: grossSalary,
+          requiredDeposit,
+          alreadyHeld,
+          additionalRequired,
+          method: 'FULL',
+          installmentCount: additionalRequired > 0 ? 1 : 0,
+          installmentAmount: additionalRequired,
+          status: 'ACTIVE',
+        },
+      });
+    }
+
+    return tx.employee.findUnique({
+      where: { id: employee.id },
+      include: {
+        department: true,
+        designation: true,
+        salaryHistory: {
+          orderBy: { effectiveFrom: 'desc' },
+        },
+        deposits: {
+          include: { transactions: true },
+        },
+      },
+    });
+  });
+
+  if (!result) {
+    throw new NotFoundException('Employee could not be created');
+  }
+
+  await this.audit.log({
+    action: 'CREATE',
+    entityType: 'Employee',
+    entityId: result.id,
+    employeeId: result.id,
+    afterJson: result,
+  });
+
+  return result;
+}
+
+  
   async remove(userId: string, id: string) {
     const employee = await this.prisma.employee.findUnique({
       where: { id },

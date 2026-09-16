@@ -76,6 +76,38 @@ function hoursToDecimal(value: any): number | null {
   const n = Number(text);
   return Number.isFinite(n) ? n : null;
 }
+
+function normalizeAttendanceStatus(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/\s*\/\s*/g, ' / ')
+    .toLowerCase();
+}
+
+function getShortHoursStatusAction(
+  status: unknown,
+): 'MANUAL_REVIEW' | 'REGULARIZED_PRESENT' | 'NONE' {
+  const normalized = normalizeAttendanceStatus(status);
+
+  if (
+    normalized ===
+    '0.5 day present, 0.5 day absent / regularized'
+  ) {
+    return 'REGULARIZED_PRESENT';
+  }
+
+  if (
+    normalized ===
+    '0.5 day present, 0.5 day absent'
+  ) {
+    return 'MANUAL_REVIEW';
+  }
+
+  return 'NONE';
+}
+
 function normalizeHeader(value: any) { return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' '); }
 function headerMap(row: any[]) {
   const map = new Map<string, number>();
@@ -380,34 +412,173 @@ export class RunsService {
           // Attendance processing follows the Zoho source:
           // Total Hours drives leave/half-day classification and is shown in
           // the Attendance table. Payable Hours remains separate source data.
-          const classificationHours = row.totalHours;
-          const workedHours = row.totalHours;
-          const classification = leaveClassification(row.status, classificationHours, minHalf, maxHalf);
-          const holiday = row.status.toLowerCase().includes('holiday');
-          const weekend = isWeekendDay(workDate);
-          const first = row.firstCheckIn;
-          let status: any = holiday ? 'HOLIDAY' : weekend ? 'WEEK_OFF' : 'PRESENT';
-          let manual = false;
-          let manualType: any = null;
-          if (classification.type === 'full') status = 'STWI_LEAVE';
-          if (classification.fraction === 0.5) status = 'HALF_DAY';
-          if (classification.manual) { status = 'MANUAL_REVIEW'; manual = true; manualType = 'AMBIGUOUS_LEAVE'; }
+          // const classificationHours = row.totalHours;
+          // const workedHours = row.totalHours;
+          // const classification = leaveClassification(row.status, classificationHours, minHalf, maxHalf);
+          // const holiday = row.status.toLowerCase().includes('holiday');
+          // const weekend = isWeekendDay(workDate);
+          // const first = row.firstCheckIn;
+          // let status: any = holiday ? 'HOLIDAY' : weekend ? 'WEEK_OFF' : 'PRESENT';
+          // let manual = false;
+          // let manualType: any = null;
+          // if (classification.type === 'full') status = 'STWI_LEAVE';
+          // if (classification.fraction === 0.5) status = 'HALF_DAY';
+          // if (classification.manual) { status = 'MANUAL_REVIEW'; manual = true; manualType = 'AMBIGUOUS_LEAVE'; }
 
-          // Minimum-work-hours rule:
-          //   * Normal working day requires 8 hours.
-          //   * Half-day working period requires 4 hours.
-          // Any shortfall becomes proportional leave (missing hours / 8),
-          // while preserving the source status shown in the UI. Full-day leave,
-          // weekends and holidays are exempt because no work is expected.
-          const baseLeaveFraction = classification.fraction || 0;
-          const requiredHours = classification.type === 'half_day' || classification.type === 'first_half' || classification.type === 'second_half'
-            ? 4
-            : 8;
-          const workedForThreshold = row.totalHours;
-          const shortfallLeave = (!holiday && !weekend && classification.type !== 'full' && workedForThreshold != null && workedForThreshold < requiredHours)
-            ? hoursToLeaveFraction(requiredHours, workedForThreshold)
-            : 0;
-          const leaveFraction = money(Math.min(1, baseLeaveFraction + shortfallLeave));
+          // // Minimum-work-hours rule:
+          // //   * Normal working day requires 8 hours.
+          // //   * Half-day working period requires 4 hours.
+          // // Any shortfall becomes proportional leave (missing hours / 8),
+          // // while preserving the source status shown in the UI. Full-day leave,
+          // // weekends and holidays are exempt because no work is expected.
+          // const baseLeaveFraction = classification.fraction || 0;
+          // const requiredHours = classification.type === 'half_day' || classification.type === 'first_half' || classification.type === 'second_half'
+          //   ? 4
+          //   : 8;
+          // const workedForThreshold = row.totalHours;
+          // const shortfallLeave = (!holiday && !weekend && classification.type !== 'full' && workedForThreshold != null && workedForThreshold < requiredHours)
+          //   ? hoursToLeaveFraction(requiredHours, workedForThreshold)
+          //   : 0;
+          // const leaveFraction = money(Math.min(1, baseLeaveFraction + shortfallLeave));
+
+          const classificationHours = row.totalHours;
+const workedHours = row.totalHours;
+
+const classification = leaveClassification(
+  row.status,
+  classificationHours,
+  minHalf,
+  maxHalf,
+);
+
+const holiday =
+  row.status.toLowerCase().includes('holiday');
+
+const weekend = isWeekendDay(workDate);
+const first = row.firstCheckIn;
+
+let status: any =
+  holiday
+    ? 'HOLIDAY'
+    : weekend
+      ? 'WEEK_OFF'
+      : 'PRESENT';
+
+let manual = false;
+let manualType: any = null;
+
+// Identify the two special Zoho short-hours statuses.
+const shortHoursAction =
+  getShortHoursStatusAction(row.status);
+
+const isRegularizedStatus =
+  shortHoursAction === 'REGULARIZED_PRESENT';
+
+const isManualShortHoursStatus =
+  shortHoursAction === 'MANUAL_REVIEW';
+
+  
+
+// Existing STWI Leave classification.
+if (classification.type === 'full') {
+  status = 'STWI_LEAVE';
+}
+
+if (classification.fraction === 0.5) {
+  status = 'HALF_DAY';
+}
+
+if (classification.manual) {
+  status = 'MANUAL_REVIEW';
+  manual = true;
+  manualType = 'AMBIGUOUS_LEAVE';
+}
+
+// Required working hours.
+const requiredHours =
+  classification.type === 'half_day' ||
+  classification.type === 'first_half' ||
+  classification.type === 'second_half'
+    ? 4
+    : 8;
+
+const workedForThreshold = row.totalHours;
+
+const isShortHours =
+  !holiday &&
+  !weekend &&
+  classification.type !== 'full' &&
+  workedForThreshold != null &&
+  workedForThreshold < requiredHours;
+
+// Normal V1.6 short-hours calculation.
+const baseLeaveFraction =
+  classification.fraction || 0;
+
+const shortfallLeave =
+  isShortHours
+    ? hoursToLeaveFraction(
+        requiredHours,
+        workedForThreshold!,
+      )
+    : 0;
+
+let leaveFraction = money(
+  Math.min(
+    1,
+    baseLeaveFraction + shortfallLeave,
+  ),
+);
+
+/*
+ * CASE 1
+ *
+ * Excel:
+ * "0.5 day Present, 0.5 day Absent"
+ *
+ * When hours are below the required hours:
+ * - keep in Manual Review
+ * - DO NOT automatically deduct leave
+ * - DO NOT create automatic salary deduction
+ */
+
+
+if (
+  isShortHours &&
+  shortHoursAction === 'MANUAL_REVIEW'
+) {
+  status = 'MANUAL_REVIEW';
+
+  manual = true;
+  manualType = 'UNEXPECTED_DURATION';
+
+  // HR will decide the final treatment manually.
+  leaveFraction = 0;
+}
+
+/*
+ * CASE 2
+ *
+ * Excel:
+ * "0.5 day Present, 0.5 day Absent / Regularized"
+ *
+ * Regularized always means:
+ * - FULL-DAY PRESENT
+ * - no leave
+ * - no salary deduction
+ * - no Manual Review
+ *
+ * This override applies regardless of worked hours.
+ */
+if (shortHoursAction === 'REGULARIZED_PRESENT') {
+  status = 'PRESENT';
+
+  manual = false;
+  manualType = null;
+
+  leaveFraction = 0;
+}
+
           const firstMin = row.firstCheckInMinutes ?? timeMinutes(first);
           const expected = expectedLoginForAttendance(row.status, classification.type, firstMin);
           let late = false;
@@ -457,16 +628,55 @@ export class RunsService {
             });
           }
           
+          // if (leaveFraction > 0) {
+          //   const leaveType = classification.type === 'full'
+          //     ? 'FULL_DAY'
+          //     : (shortfallLeave > 0 ? 'HOUR_SHORTFALL' : 'HALF_DAY');
+          //   await this.prisma.leaveEvent.upsert({
+          //     where: { attendanceRecordId: record.id },
+          //     update: { leaveFraction, leaveType },
+          //     create: { payrollRunId: runId, employeeId: employee.id, attendanceRecordId: record.id, leaveFraction, leaveType },
+          //   });
+          // }
+
           if (leaveFraction > 0) {
-            const leaveType = classification.type === 'full'
-              ? 'FULL_DAY'
-              : (shortfallLeave > 0 ? 'HOUR_SHORTFALL' : 'HALF_DAY');
-            await this.prisma.leaveEvent.upsert({
-              where: { attendanceRecordId: record.id },
-              update: { leaveFraction, leaveType },
-              create: { payrollRunId: runId, employeeId: employee.id, attendanceRecordId: record.id, leaveFraction, leaveType },
-            });
-          }
+  const leaveType =
+    classification.type === 'full'
+      ? 'FULL_DAY'
+      : (shortfallLeave > 0
+          ? 'HOUR_SHORTFALL'
+          : 'HALF_DAY');
+
+  await this.prisma.leaveEvent.upsert({
+    where: {
+      attendanceRecordId: record.id,
+    },
+    update: {
+      leaveFraction,
+      leaveType,
+    },
+    create: {
+      payrollRunId: runId,
+      employeeId: employee.id,
+      attendanceRecordId: record.id,
+      leaveFraction,
+      leaveType,
+    },
+  });
+} else {
+  /*
+   * Important for Regularized rows:
+   * remove any old leave event if this row previously
+   * had a leave classification.
+   */
+  await this.prisma.leaveEvent.deleteMany({
+    where: {
+      attendanceRecordId: record.id,
+    },
+  });
+}
+
+
           if (manual && manualType) await this.ensureReview(runId, employee.id, manualType, `Attendance review required for ${workDate.toISOString().slice(0,10)} from ${file.originalname}.`);
           imported++;
         }
@@ -546,6 +756,23 @@ export class RunsService {
   }
 
   async updateAttendance(userId: string, runId: string, attendanceId: string, body: any) {
+
+    const run =
+  await this.prisma.payrollRun.findUnique({
+    where: { id: runId },
+  });
+
+if (!run) {
+  throw new NotFoundException(
+    'Payroll run not found',
+  );
+}
+
+if (run.status === 'FINALIZED') {
+  throw new BadRequestException(
+    'Finalized run is locked',
+  );
+}
     const existing = await this.prisma.attendanceRecord.findFirst({ where: { id: attendanceId, payrollRunId: runId } });
     if (!existing) throw new NotFoundException('Attendance record not found');
     const p = this.attendancePayload(runId, body);
@@ -557,6 +784,24 @@ export class RunsService {
   }
 
   async deleteAttendance(userId: string, runId: string, attendanceId: string) {
+
+    const run =
+  await this.prisma.payrollRun.findUnique({
+    where: { id: runId },
+  });
+
+if (!run) {
+  throw new NotFoundException(
+    'Payroll run not found',
+  );
+}
+
+if (run.status === 'FINALIZED') {
+  throw new BadRequestException(
+    'Finalized run is locked',
+  );
+}
+
     const existing = await this.prisma.attendanceRecord.findFirst({ where: { id: attendanceId, payrollRunId: runId } });
     if (!existing) throw new NotFoundException('Attendance record not found');
     await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: attendanceId } });
@@ -568,6 +813,24 @@ export class RunsService {
   async deleteReview(userId: string, reviewId: string) {
     const review = await this.prisma.manualReview.findUnique({ where: { id: reviewId } });
     if (!review) throw new NotFoundException('Review not found');
+    const run =
+  await this.prisma.payrollRun.findUnique({
+    where: {
+      id: review.payrollRunId,
+    },
+  });
+
+if (!run) {
+  throw new NotFoundException(
+    'Payroll run not found',
+  );
+}
+
+if (run.status === 'FINALIZED') {
+  throw new BadRequestException(
+    'Finalized run is locked',
+  );
+}
     if (review.status === 'RESOLVED') throw new BadRequestException('Resolved reviews are retained for audit and cannot be deleted.');
     await this.prisma.manualReview.delete({ where: { id: reviewId } });
     await this.audit.log({ userId, employeeId: review.employeeId ?? undefined, action: 'DELETE_REVIEW', entityType: 'ManualReview', entityId: reviewId, beforeJson: review });
@@ -952,6 +1215,9 @@ const totalHoursIdx = findCol(headers, [
   async resolveReview(userId: string, reviewId: string, body: { resolution?: string; penaltyAmount?: number; doubleDeductionLeave?: boolean; status?: 'RESOLVED' | 'REJECTED' }) {
     const review = await this.prisma.manualReview.findUnique({ where: { id: reviewId } });
     if (!review) throw new NotFoundException('Review not found');
+    const run = await this.prisma.payrollRun.findUnique({ where: { id: review.payrollRunId } });
+    if (!run) throw new NotFoundException('Payroll run not found');
+    if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
     if (review.status !== 'OPEN') throw new BadRequestException('Review is already closed');
     const updated = await this.prisma.manualReview.update({ where: { id: reviewId }, data: { status: body.status ?? 'RESOLVED', resolution: body.resolution, penaltyAmount: body.penaltyAmount, doubleDeductionLeave: body.doubleDeductionLeave ?? review.doubleDeductionLeave, assignedToId: userId, resolvedAt: new Date() } });
     await this.audit.log({ userId, employeeId: review.employeeId ?? undefined, action: 'RESOLVE', entityType: 'ManualReview', entityId: reviewId, beforeJson: review, afterJson: updated });
@@ -1237,6 +1503,22 @@ const totalHoursIdx = findCol(headers, [
   }
 
   async setOtherDeduction(userId: string, runId: string, employeeId: string, amount: number) {
+    const run =
+  await this.prisma.payrollRun.findUnique({
+    where: { id: runId },
+  });
+
+if (!run) {
+  throw new NotFoundException(
+    'Payroll run not found',
+  );
+}
+
+if (run.status === 'FINALIZED') {
+  throw new BadRequestException(
+    'Finalized run is locked',
+  );
+}
     const result = await this.prisma.payrollResult.findUnique({ where: { payrollRunId_employeeId: { payrollRunId: runId, employeeId } } });
     if (!result) throw new NotFoundException('Payroll result not found');
     const normalized = money(Math.max(0, Number(amount) || 0));
@@ -1256,6 +1538,22 @@ async setDepositMethod(
     employeeId: string,
     method: 'FULL' | 'EMI_3_MONTHS',
   ): Promise<any> {
+    const run =
+  await this.prisma.payrollRun.findUnique({
+    where: { id: runId },
+  });
+
+if (!run) {
+  throw new NotFoundException(
+    'Payroll run not found',
+  );
+}
+
+if (run.status === 'FINALIZED') {
+  throw new BadRequestException(
+    'Finalized run is locked',
+  );
+}
     let result = await this.prisma.payrollResult.findUnique({ where: { payrollRunId_employeeId: { payrollRunId: runId, employeeId } } });
     if (!result) {
       await this.calculatePayroll(runId, userId);

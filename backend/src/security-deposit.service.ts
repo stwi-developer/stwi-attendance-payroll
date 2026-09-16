@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from './prisma.service';
 
 type DepositMethod = 'FULL' | 'EMI_3_MONTHS';
@@ -33,11 +32,30 @@ export class SecurityDepositService {
   }
 
   async getHeldAmount(employeeId: string): Promise<number> {
-    const aggregate = await this.prisma.securityDepositTransaction.aggregate({
+  const [latestDeposit, aggregate] = await Promise.all([
+    this.prisma.securityDeposit.findFirst({
+      where: { employeeId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        alreadyHeld: true,
+      },
+    }),
+
+    this.prisma.securityDepositTransaction.aggregate({
       where: { employeeId },
       _sum: { amount: true },
-    });
-    const value = aggregate._sum.amount as Decimal | null;
-    return value ? Number(value) : 0;
-  }
+    }),
+  ]);
+
+  const depositHeld = latestDeposit
+    ? Number(latestDeposit.alreadyHeld)
+    : 0;
+
+  const transactionHeld = aggregate._sum.amount
+    ? Number(aggregate._sum.amount)
+    : 0;
+
+  return Math.max(depositHeld, transactionHeld);
+}
+ 
 }

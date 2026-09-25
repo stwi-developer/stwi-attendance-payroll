@@ -1,3 +1,152 @@
-:root{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1f2937;background:#f4f6f8}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{border:0;border-radius:8px;padding:9px 13px;background:#1f4e78;color:#fff;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}input,select{width:100%;border:1px solid #ccd4dd;border-radius:7px;padding:8px;background:#fff}.app{display:flex;min-height:100vh}aside{width:230px;background:#17324d;color:#fff;padding:22px 16px;display:flex;flex-direction:column;gap:20px}.brand{font-size:26px;font-weight:800}.userbox{background:#214461;padding:12px;border-radius:10px;display:flex;flex-direction:column;gap:3px}.userbox span{font-size:12px;opacity:.75}nav{display:flex;flex-direction:column;gap:6px}nav a{color:#fff;text-decoration:none;padding:9px 10px;border-radius:7px}nav a:hover{background:#214461}.logout{margin-top:auto;background:#8b1e2d}main{flex:1;padding:28px;min-width:0}.page-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px}.page-head h1{margin:.35rem 0}.page-head p{margin:.25rem 0;color:#64748b}.panel{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:18px;box-shadow:0 3px 12px rgba(0,0,0,.04)}.panel h3{margin-top:0}.panel-head{display:flex;justify-content:space-between;align-items:center}.split{display:grid;grid-template-columns:360px 1fr;gap:18px}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.full-width{grid-column:1/-1}.filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.filters>*{width:auto;min-width:120px}.filters input{min-width:160px}.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}.metric{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:4px}.metric span{font-size:12px;color:#64748b}.metric strong{font-size:22px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:6px;color:inherit;text-decoration:none;margin:7px 0}.card span{color:#64748b}.card button{width:max-content}.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.info-grid div{display:flex;flex-direction:column;gap:3px}.info-grid span{font-size:12px;color:#64748b}.table-scroll{overflow-x:auto;width:100%}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #edf2f7;padding:9px;text-align:left;vertical-align:top}th{background:#f8fafc;position:sticky;top:0}.error{background:#fff0f0;color:#9b1c1c;border:1px solid #f2b8b8;padding:10px;border-radius:8px;margin-bottom:12px}.empty{padding:26px;text-align:center;color:#64748b}.pagination{display:flex;justify-content:space-between;align-items:center;margin-top:14px;color:#64748b}.actions{display:flex;gap:8px;align-items:center}.page-size{width:auto}.login-wrap{min-height:100vh;display:grid;place-items:center}.login-card{width:360px;background:#fff;padding:28px;border-radius:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:12px}.login-card h1{margin:0}.login-card p{margin:0;color:#64748b}.login-card small{color:#64748b}.muted{color:#64748b}@media(max-width:1050px){.split,.detail-grid{grid-template-columns:1fr}.stats-grid{grid-template-columns:repeat(2,1fr)}aside{width:190px}}@media(max-width:720px){.app{flex-direction:column}aside{width:100%}main{padding:16px}.stats-grid,.grid{grid-template-columns:1fr}.filters>*{width:100%}}
+/* ==========================================================================
+   STWI Attendance & Payroll - theme (V1.8)
+   Brand colours: yellow #FBC116, blue #25387C, white.
+   Change a colour here once and it applies to the whole application.
+   ========================================================================== */
+:root{
+  --stwi-yellow:#FBC116;
+  --stwi-yellow-hover:#e5ad0c;
+  --stwi-yellow-soft:#fff6db;
+  --stwi-blue:#25387C;
+  --stwi-blue-hover:#1b2a5e;
+  --stwi-blue-soft:#eef1f8;
+  --stwi-blue-line:#d5dbeb;
+  --white:#ffffff;
+  --page-bg:#f5f7fb;
+  --text:#1c2541;
+  --muted:#5b6785;
+  --sidebar-width:240px;
+  font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  color:var(--text);
+  background:var(--page-bg);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page-bg)}
+button,input,select{font:inherit}
 
-.employee-checkbox-grid{display:flex;flex-wrap:wrap;gap:4px 14px;padding:8px 0 2px}.employee-checkbox-grid label{white-space:nowrap}.payroll-editor{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;padding:14px;background:#f5f8fb;border:1px solid #d8e0e8;border-radius:8px}.payroll-editor label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600}.payroll-editor input{width:100%;box-sizing:border-box}.payroll-editor .wide{grid-column:span 2}.editor-actions{grid-column:1/-1;display:flex;gap:8px;justify-content:flex-end;margin-top:4px}.table-scroll{overflow:auto}.muted{color:#6b7280}@media(max-width:1200px){.payroll-editor{grid-template-columns:repeat(3,minmax(140px,1fr))}}@media(max-width:800px){.payroll-editor{grid-template-columns:repeat(2,minmax(140px,1fr))}.payroll-editor .wide{grid-column:span 2}}
+/* ---------- buttons ---------- */
+button{border:1px solid var(--stwi-blue);border-radius:8px;padding:9px 14px;background:var(--stwi-blue);color:var(--white);cursor:pointer;font-weight:600;transition:background .15s,color .15s,border-color .15s}
+button:hover:not(:disabled){background:var(--stwi-yellow);border-color:var(--stwi-yellow);color:var(--stwi-blue)}
+button:focus-visible{outline:3px solid var(--stwi-yellow);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+
+/* ---------- form fields ---------- */
+input,select{width:100%;border:1px solid var(--stwi-blue-line);border-radius:8px;padding:8px;background:var(--white);color:var(--text);font-weight:400}
+input:focus,select:focus{outline:none;border-color:var(--stwi-blue);box-shadow:0 0 0 3px rgba(251,193,22,.35)}
+label{color:var(--stwi-blue);font-weight:600;font-size:14px}
+
+/* ---------- layout + sticky sidebar ---------- */
+.app{display:flex;min-height:100vh}
+aside{
+  width:var(--sidebar-width);flex:0 0 var(--sidebar-width);
+  background:var(--stwi-blue);color:var(--white);
+  padding:20px 16px;display:flex;flex-direction:column;gap:18px;
+  /* stays in place while the page content scrolls */
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+}
+.brand{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.brand-logo{background:var(--white);border-radius:10px;padding:8px 10px;display:inline-flex;box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.brand-logo img{height:56px;width:auto;display:block}
+.brand-name{font-size:13px;font-weight:600;letter-spacing:.3px;color:var(--stwi-yellow)}
+.userbox{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);padding:12px;border-radius:10px;display:flex;flex-direction:column;gap:3px}
+.userbox strong{color:var(--white)}
+.userbox span{font-size:12px;color:var(--stwi-yellow);font-weight:600;letter-spacing:.3px}
+nav{display:flex;flex-direction:column;gap:6px}
+nav a{color:var(--white);text-decoration:none;padding:10px 12px;border-radius:8px;font-weight:500;border-left:3px solid transparent}
+nav a:hover{background:rgba(255,255,255,.1);border-left-color:var(--stwi-yellow)}
+nav a.active{background:var(--stwi-yellow);color:var(--stwi-blue);font-weight:700;border-left-color:var(--stwi-yellow)}
+.logout{margin-top:auto;background:var(--stwi-yellow);border-color:var(--stwi-yellow);color:var(--stwi-blue)}
+.logout:hover:not(:disabled){background:var(--white);border-color:var(--white);color:var(--stwi-blue)}
+main{flex:1;padding:28px;min-width:0}
+
+/* ---------- headings / page ---------- */
+h1,h2,h3,h4{color:var(--stwi-blue)}
+.page-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px}
+.page-head h1{margin:.35rem 0}
+.page-head p{margin:.25rem 0;color:var(--muted)}
+.muted{color:var(--muted)}
+
+/* ---------- panels / cards ---------- */
+.panel{background:var(--white);border:1px solid var(--stwi-blue-line);border-radius:14px;padding:18px;box-shadow:0 4px 14px rgba(37,56,124,.06)}
+.panel h3{margin-top:0}
+.panel-head{display:flex;justify-content:space-between;align-items:center}
+.split{display:grid;grid-template-columns:360px 1fr;gap:18px}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.full-width{grid-column:1/-1}
+.split>*,.detail-grid>*{min-width:0}
+.panel{max-width:100%;overflow-x:auto}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.filters>*{width:auto;min-width:120px}
+.filters input{min-width:160px}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.metric{background:var(--white);border:1px solid var(--stwi-blue-line);border-top:4px solid var(--stwi-yellow);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:4px}
+.metric span{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.metric strong{font-size:22px;color:var(--stwi-blue)}
+.metric small{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.card{background:var(--white);border:1px solid var(--stwi-blue-line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:6px;color:inherit;text-decoration:none;margin:7px 0;transition:border-color .15s,box-shadow .15s}
+a.card:hover{border-color:var(--stwi-yellow);box-shadow:0 6px 18px rgba(37,56,124,.12)}
+.card strong{color:var(--stwi-blue)}
+.card span{color:var(--muted)}
+.card button{width:max-content}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.info-grid div{display:flex;flex-direction:column;gap:3px}
+.info-grid span{font-size:12px;color:var(--muted)}
+
+/* ---------- tables ---------- */
+.table-scroll{overflow:auto;width:100%}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{border-bottom:1px solid var(--stwi-blue-soft);padding:9px;text-align:left;vertical-align:top}
+th{background:var(--stwi-blue-soft);color:var(--stwi-blue);font-weight:700;position:sticky;top:0}
+tbody tr:hover td{background:#fbfcff}
+td small{color:var(--muted);margin-left:4px}
+
+/* ---------- messages / misc ---------- */
+.error{background:var(--stwi-yellow-soft);color:var(--stwi-blue);border:1px solid var(--stwi-yellow);border-left:5px solid var(--stwi-yellow);padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600}
+.empty{padding:26px;text-align:center;color:var(--muted)}
+.pagination{display:flex;justify-content:space-between;align-items:center;margin-top:14px;color:var(--muted)}
+.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.page-size{width:auto}
+
+/* ---------- login ---------- */
+.login-wrap{min-height:100vh;display:grid;place-items:center;background:linear-gradient(135deg,var(--stwi-blue) 0%,var(--stwi-blue-hover) 100%)}
+.login-card{width:360px;background:var(--white);padding:28px;border-radius:16px;border-top:6px solid var(--stwi-yellow);display:flex;flex-direction:column;gap:12px;box-shadow:0 18px 40px rgba(0,0,0,.25)}
+.login-card h1{margin:0;font-size:24px}
+.login-card p{margin:0;color:var(--muted)}
+.login-card small{color:var(--muted)}
+.login-logo{height:64px;width:auto;align-self:flex-start}
+.login-card button{background:var(--stwi-yellow);border-color:var(--stwi-yellow);color:var(--stwi-blue);margin-top:4px}
+.login-card button:hover:not(:disabled){background:var(--stwi-blue);border-color:var(--stwi-blue);color:var(--white)}
+
+/* ---------- run page extras ---------- */
+.employee-switcher{display:flex;flex-wrap:wrap;gap:6px}
+.employee-switcher button{background:var(--white);color:var(--stwi-blue)}
+.employee-switcher button.active{background:var(--stwi-blue);color:var(--white)}
+.employee-switcher button:hover:not(:disabled){background:var(--stwi-yellow);border-color:var(--stwi-yellow);color:var(--stwi-blue)}
+.summary-block{border-top:1px solid var(--stwi-blue-line);padding-top:10px;margin-top:10px}
+.summary-columns{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.calculation-card{border:1px solid var(--stwi-blue-line);border-left:4px solid var(--stwi-yellow);border-radius:10px;padding:12px;margin:10px 0}
+.calculation-card strong{color:var(--stwi-blue)}
+.calculation-grid{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:6px 14px;margin-top:8px;font-size:13px;color:var(--muted)}
+.calculation-grid b{color:var(--stwi-blue)}
+.employee-checkbox-grid{display:flex;flex-wrap:wrap;gap:4px 14px;padding:8px 0 2px}
+.employee-checkbox-grid label{white-space:nowrap;font-weight:500;color:var(--text)}
+.employee-checkbox-grid input,.panel-head label input{width:auto;accent-color:var(--stwi-blue)}
+.payroll-editor{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;padding:14px;background:var(--stwi-blue-soft);border:1px solid var(--stwi-blue-line);border-radius:10px}
+.payroll-editor label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600}
+.payroll-editor input{width:100%;box-sizing:border-box}
+.payroll-editor .wide{grid-column:span 2}
+.editor-actions{grid-column:1/-1;display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+
+/* ---------- responsive ---------- */
+@media(max-width:1200px){.payroll-editor{grid-template-columns:repeat(3,minmax(140px,1fr))}.calculation-grid{grid-template-columns:repeat(2,minmax(160px,1fr))}}
+@media(max-width:1050px){.split,.detail-grid{grid-template-columns:1fr}.stats-grid{grid-template-columns:repeat(2,1fr)}:root{--sidebar-width:200px}}
+@media(max-width:800px){.payroll-editor{grid-template-columns:repeat(2,minmax(140px,1fr))}.payroll-editor .wide{grid-column:span 2}.summary-columns{grid-template-columns:1fr}}
+@media(max-width:720px){
+  .app{flex-direction:column}
+  /* on phones the sidebar becomes a normal top bar (not sticky) */
+  aside{position:static;width:100%;flex:none;height:auto}
+  main{padding:16px}
+  .stats-grid,.grid{grid-template-columns:1fr}
+  .filters>*{width:100%}
+}

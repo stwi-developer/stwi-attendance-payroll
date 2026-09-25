@@ -1,7 +1,7 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
-import JSZip from 'jszip';
+import * as JSZip from 'jszip';
 import { AuthGuard, AuthenticatedRequest } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -40,7 +40,7 @@ export class RunsController {
         });
       }
     }
-    if (!expanded.length) throw new Error('ZIP contains no .xlsx, .xls or .csv attendance files.');
+    if (!expanded.length) throw new BadRequestException('No .xlsx, .xls or .csv attendance files were found in the upload.');
     return this.service.uploadFiles(req.user.id, id, expanded);
   }
   @Post(':id/process') @Roles('CEO','HR','JUNIOR_HR') process(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.processRun(req.user.id, id); }

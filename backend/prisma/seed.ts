@@ -27,6 +27,7 @@ async function main() {
     ['first_half_login', '14:30', 'Expected login for First Half STWI Leave.'],
     ['ptax_threshold', '12000', 'P.Tax applies when monthly gross salary is strictly greater than ₹12,000.'],
     ['ptax_amount', '200', 'P.Tax amount at or above threshold.'],
+    ['full_day_min_hours', '8', 'Working-day hours (Zoho Total Hours). A working day under this goes to Manual Review (V1.7).'],
     ['half_day_min_hours', '4', 'Minimum worked hours for half-day STWI leave.'],
     ['half_day_max_hours', '5.5', 'Upper legacy boundary; values outside the configured range go to review.'],
     ['double_deduction_leave_days', '1', 'Manual-review tick creates one additional deduction day.'],

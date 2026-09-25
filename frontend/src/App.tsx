@@ -1,17 +1,40 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import stwiLogo from './assets/stwi-logo.webp';
 import { api, AttendanceFile, AttendanceRecord, Employee, Page, Pagination, PayrollResult, Review, Run, User } from './api';
 
 const currency=(v:any)=>`₹${Number(v||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const monthName=(m:number)=>m?new Date(2000,m-1,1).toLocaleString('en-IN',{month:'long'}):'—';
 const errMessage=(e:unknown)=>e instanceof Error?e.message:'Something went wrong';
 
+// V1.7: one resolve dialog for both review screens. For reviews about a single
+// day, HR decides the leave for that day (0 / 0.5 / 1); it is written to the
+// attendance row and used by payroll.
+const DAY_REVIEW_TYPES=['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','UNEXPECTED_DURATION'];
+function askReviewResolution(r:Review):any|null{
+  const payload:any={resolution:'Resolved in web app'};
+  if(DAY_REVIEW_TYPES.includes(r.type)){
+    const leave=window.prompt(`${r.description}\n\nLeave for this day?\n0 = present (no deduction)\n0.5 = half day\n1 = full day absent\n(leave blank to keep the current value)`,'');
+    if(leave===null)return null;
+    if(leave.trim()!==''){
+      const n=Number(leave);
+      if(!Number.isFinite(n)||n<0||n>1){window.alert('Enter 0, 0.5 or 1.');return null;}
+      payload.leaveFraction=n;
+    }
+  }
+  const penalty=window.prompt('Penalty amount (₹)','0');
+  if(penalty===null)return null;
+  payload.penaltyAmount=Number(penalty||0);
+  payload.doubleDeductionLeave=window.confirm('Apply Double Deduction Leave (1 extra day, not covered by paid leave)?\n\nOK = Yes, Cancel = No');
+  return payload;
+}
+
 function ErrorBox({message}:{message:string}){return message?<div className="error">{message}</div>:null}
 function PaginationControls({pagination,onChange}:{pagination?:Pagination;onChange:(page:number)=>void}){if(!pagination||pagination.total===0)return null;return <div className="pagination"><span>Showing {Math.min((pagination.page-1)*pagination.pageSize+1,pagination.total)}–{Math.min(pagination.page*pagination.pageSize,pagination.total)} of {pagination.total}</span><div className="actions"><button disabled={pagination.page<=1} onClick={()=>onChange(pagination.page-1)}>Previous</button><span>Page {pagination.page}/{Math.max(1,pagination.totalPages)}</span><button disabled={pagination.page>=pagination.totalPages} onClick={()=>onChange(pagination.page+1)}>Next</button></div></div>}
 function PageSize({value,onChange}:{value:number;onChange:(v:number)=>void}){return <select className="page-size" value={value} onChange={e=>onChange(Number(e.target.value))}><option>10</option><option>25</option><option>50</option><option>100</option></select>}
 function ConfirmButton({children,onConfirm,disabled=false}:{children:any;onConfirm:()=>void;disabled?:boolean}){return <button disabled={disabled} onClick={()=>{if(window.confirm('Are you sure?'))onConfirm()}}>{children}</button>}
 
-function Login({onLogin}:{onLogin:(u:User)=>void}){const nav=useNavigate();const[email,setEmail]=useState('ceo@company.local');const[password,setPassword]=useState('ChangeMe123!');const[error,setError]=useState('');return <div className="login-wrap"><form className="login-card" onSubmit={async e=>{e.preventDefault();try{const r=await api.login(email,password);localStorage.setItem('accessToken',r.accessToken);onLogin(r.user);nav('/')}catch(err){setError(errMessage(err))}}}><h1>STWI Attendance &amp; Payroll</h1><p>Internal HR &amp; Payroll</p><label>Email<input value={email} onChange={e=>setEmail(e.target.value)}/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label><ErrorBox message={error}/><button>Sign in</button></form></div>}
+function Login({onLogin}:{onLogin:(u:User)=>void}){const nav=useNavigate();const[email,setEmail]=useState('');const[password,setPassword]=useState('');const[error,setError]=useState('');return <div className="login-wrap"><form className="login-card" onSubmit={async e=>{e.preventDefault();try{const r=await api.login(email,password);localStorage.setItem('accessToken',r.accessToken);onLogin(r.user);nav('/')}catch(err){setError(errMessage(err))}}}><img className="login-logo" src={stwiLogo} alt="STWI"/><h1>STWI Attendance &amp; Payroll</h1><p>Internal HR &amp; Payroll</p><label>Email<input value={email} onChange={e=>setEmail(e.target.value)}/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label><ErrorBox message={error}/><button>Sign in</button></form></div>}
 function Dashboard({user}:{user:User}){const[data,setData]=useState<any>();const[error,setError]=useState('');useEffect(()=>{api.dashboard().then(setData).catch(e=>setError(errMessage(e)))},[]);return <div><div className="page-head"><div><h1>Dashboard</h1><p>Welcome, {user.name} · {user.role}</p></div></div><ErrorBox message={error}/><div className="stats-grid"><div className="metric"><span>Active Employees</span><strong>{data?.employees??'—'}</strong></div><div className="metric"><span>Latest Run</span><strong>{data?.latestRun?`${monthName(data.latestRun.month)} ${data.latestRun.year}`:'—'}</strong><small>{data?.latestRun?.status||'No run yet'}</small></div><div className="metric"><span>Open Reviews</span><strong>{data?.latestRun?.reviewsOpen??0}</strong></div><div className="metric"><span>Payroll Results</span><strong>{data?.latestRun?.payrollResults??0}</strong></div></div><div className="grid"><Link className="card" to="/employees"><strong>Employees</strong><span>Master data, salary and deposit.</span></Link><Link className="card" to="/runs"><strong>Monthly Run</strong><span>Upload, process, review and calculate.</span></Link><Link className="card" to="/reviews"><strong>Manual Review</strong><span>Resolve attendance exceptions.</span></Link><Link className="card" to="/payroll"><strong>Payroll</strong><span>Review, export and finalize.</span></Link></div></div>}
 
 function Employees(){const nav=useNavigate();const[result,setResult]=useState<Page<Employee>|null>();const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[error,setError]=useState('');const[departments,setDepartments]=useState<any[]>([]);const[designations,setDesignations]=useState<any[]>([]);const[filters,setFilters]=useState({search:'',status:'',departmentId:'',designationId:'',minSalary:'',maxSalary:''});const[f,setF]=useState({employeeCode:'',name:'',email:'',grossSalary:'',securityDepositAlreadyTaken:'',joiningDate:'',departmentId:'',designationId:''});
@@ -111,7 +134,7 @@ function RunDetail(){
       penalty:Number(r.penalty),
       ptax:Number(r.ptax),
       payableAmount:Number(r.payableAmount),
-      deductionLeave:Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave),
+      deductionLeave:Number(r.deductionLeave??0),
       halfDay:Number(r.halfDayCount||0),
       lateMark:Number(r.lateMarks),
       paidLeave:Number(r.paidLeaveAllowance),
@@ -124,11 +147,11 @@ function RunDetail(){
       otherDeductions:Number(r.otherDeductions||0),
     }}));
   };
-  const payrollDraft=(r:any)=>payrollDrafts[r.id] || {
+  const payrollDraft=(r:any)=>(!r.__fresh&&payrollDrafts[r.id]) || {
     workingDays:r.workingDays, monthlyPayment:Number(r.grossSalary), perDay:Number(r.dailySalary),
     sdDeduction:Number(r.securityDeposit), securityDeposit:Number(r.securityDeposit), leave:Number(r.leaveDeductionAmount),
     penalty:Number(r.penalty), ptax:Number(r.ptax), payableAmount:Number(r.payableAmount),
-    deductionLeave:Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave),
+    deductionLeave:Number(r.deductionLeave??0),
     halfDay:Number(r.halfDayCount||0), lateMark:Number(r.lateMarks), paidLeave:Number(r.paidLeaveAllowance),
     doubleDeductionLeave:Number(r.doubleDeductionLeave), totalLeave:Number(r.totalLeave),
     joinDate:r.joiningDate?r.joiningDate.slice(0,10):'', renewalDate:r.renewalDate||'',
@@ -188,7 +211,7 @@ function RunDetail(){
         <button onClick={async()=>{const employeeId=window.prompt('Employee ID (database id)');if(!employeeId)return;const workDate=window.prompt('Date YYYY-MM-DD');if(!workDate)return;await action('manual attendance',()=>api.addManualAttendance(id!,{employeeId,workDate,status:'PRESENT',workedHours:8,isLate:false}))}}>Add Manual</button>
       </div>
       {attendance?.data.length?<table><thead><tr><th>Date</th><th>Employee</th><th>Check-in</th><th>Hours</th><th>Status</th><th>Late</th><th>Leave</th><th>Actions</th></tr></thead><tbody>
-        {attendance.data.map(a=><tr key={a.id}><td>{new Date(a.workDate).toLocaleDateString('en-IN',{timeZone:'UTC'})}</td><td>{a.employee.name}<small>{a.employee.employeeCode}</small></td><td>{formatTime(a.firstCheckIn)}</td><td>{a.workedHours??'—'}</td><td title={`System status: ${a.status}`}>{a.sourceStatus||a.status}</td><td>{a.isLate?'Yes':'No'} {a.lateMinutes?`(${a.lateMinutes}m)`:''}</td><td>{a.leaveFraction??'—'}</td><td>{run.status!=='FINALIZED'&&<><button onClick={async()=>{const status=window.prompt('Source Status',a.sourceStatus||a.status);if(!status)return;const leave=window.prompt('Leave fraction',String(a.leaveFraction||0));await action('update attendance',()=>api.updateAttendance(id!,a.id,{workDate:a.workDate,status:a.status,leaveFraction:Number(leave||0),workedHours:Number(a.workedHours||0),isLate:a.isLate,lateMinutes:a.lateMinutes,isHoliday:a.isHoliday,isWeekOff:a.isWeekOff,sourceStatus:status}))}}>Edit</button> <ConfirmButton onConfirm={()=>action('delete attendance',()=>api.deleteAttendance(id!,a.id))}>Delete</ConfirmButton></>}</td></tr>)}
+        {attendance.data.map(a=><tr key={a.id}><td>{new Date(a.workDate).toLocaleDateString('en-IN',{timeZone:'UTC'})}</td><td>{a.employee.name}<small>{a.employee.employeeCode}</small></td><td>{formatTime(a.firstCheckIn)}</td><td>{a.workedHours??'—'}</td><td title={`System status: ${a.status}`}>{a.sourceStatus||a.status}</td><td>{a.isLate?'Yes':'No'} {a.lateMinutes?`(${a.lateMinutes}m)`:''}</td><td>{a.leaveFraction??'—'}</td><td>{run.status!=='FINALIZED'&&<><button onClick={async()=>{const status=window.prompt('Source Status',a.sourceStatus||a.status);if(!status)return;const leave=window.prompt('Leave fraction',String(a.leaveFraction||0));await action('update attendance',()=>api.updateAttendance(id!,a.id,{workDate:a.workDate,status:a.status,leaveFraction:Number(leave||0),isLate:a.isLate,lateMinutes:a.lateMinutes,isHoliday:a.isHoliday,isWeekOff:a.isWeekOff,sourceStatus:status}))}}>Edit</button> <ConfirmButton onConfirm={()=>action('delete attendance',()=>api.deleteAttendance(id!,a.id))}>Delete</ConfirmButton></>}</td></tr>)}
       </tbody></table>:<div className="empty">No attendance records found.</div>}
       <PaginationControls pagination={attendance?.pagination} onChange={setAttPage}/>
     </section>
@@ -309,7 +332,7 @@ function RunDetail(){
     <section className="panel">
       <h3>Manual Review</h3>
       <div className="filters"><select value={revFilter.status} onChange={e=>{setRevPage(1);setRevFilter({...revFilter,status:e.target.value})}}><option value="">All</option><option value="OPEN">Open</option><option value="RESOLVED">Resolved</option><option value="REJECTED">Rejected</option></select><select value={revFilter.type} onChange={e=>setRevFilter({...revFilter,type:e.target.value})}><option value="">All Types</option>{['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','EMPLOYEE_MISMATCH','UNEXPECTED_DURATION','OTHER'].map(x=><option key={x}>{x}</option>)}</select><input placeholder="Employee" value={revFilter.search} onChange={e=>setRevFilter({...revFilter,search:e.target.value})}/></div>
-      {reviews?.data.length?<table><thead><tr><th>Status</th><th>Employee</th><th>Type</th><th>Description</th><th>Penalty</th><th>Double</th><th>Action</th></tr></thead><tbody>{reviews.data.map(r=><tr key={r.id}><td>{r.status}</td><td>{r.employee?.name||'—'}</td><td>{r.type}</td><td>{r.description}</td><td>{r.penaltyAmount??0}</td><td>{r.doubleDeductionLeave?'Yes':'No'}</td><td>{r.status==='OPEN'&&<button onClick={async()=>{const penalty=window.prompt('Penalty amount','0');if(penalty===null)return;const dd=window.confirm('Double Deduction Leave?');await action('resolve review',()=>api.resolveReview(r.id,{resolution:'Resolved in web app',penaltyAmount:Number(penalty||0),doubleDeductionLeave:dd}))}} >Resolve</button>} {r.status!=='RESOLVED'&&<ConfirmButton onConfirm={()=>action('delete review',()=>api.deleteReview(r.id))}>Delete</ConfirmButton>}</td></tr>)}</tbody></table>:<div className="empty">No reviews match.</div>}
+      {reviews?.data.length?<table><thead><tr><th>Status</th><th>Employee</th><th>Type</th><th>Description</th><th>Penalty</th><th>Double</th><th>Action</th></tr></thead><tbody>{reviews.data.map(r=><tr key={r.id}><td>{r.status}</td><td>{r.employee?.name||'—'}</td><td>{r.type}</td><td>{r.description}</td><td>{r.penaltyAmount??0}</td><td>{r.doubleDeductionLeave?'Yes':'No'}</td><td>{r.status==='OPEN'&&<button onClick={async()=>{const payload=askReviewResolution(r);if(!payload)return;await action('resolve review',()=>api.resolveReview(r.id,payload))}} >Resolve</button>} {r.status!=='RESOLVED'&&<ConfirmButton onConfirm={()=>action('delete review',()=>api.deleteReview(r.id))}>Delete</ConfirmButton>}</td></tr>)}</tbody></table>:<div className="empty">No reviews match.</div>}
       <PaginationControls pagination={reviews?.pagination} onChange={setRevPage}/>
     </section>
 
@@ -349,7 +372,7 @@ function RunDetail(){
           <span>Net Payable <b>{currency(r.payableAmount)}</b></span>
         </div>
       </div>}) : <div className="empty">Payroll has not been calculated yet.</div>}
-      <p className="muted">Formula: Total Deduction Leave = max(0, Leave Taken + Late-Mark Leave + Double-Deduction Leave − Paid Leave). Per-day salary = Gross Salary ÷ actual calendar days in the month. Half-day leave = 0.5 × daily salary. P.Tax = ₹200 when Gross Salary &gt; ₹12,000.</p>
+      <p className="muted">Formula: Total Deduction Leave = max(0, Leave Taken + Late-Mark Leave − Paid Leave) + Double-Deduction Leave. Per-day salary = Gross Salary ÷ actual calendar days in the month. Half-day leave = 0.5 × daily salary. P.Tax = ₹200 when Gross Salary &gt; ₹12,000.</p>
     </section>
 
     <section className="panel">
@@ -381,7 +404,7 @@ function RunDetail(){
         const setD=(key:string,value:any)=>setPayrollDrafts(prev=>({...prev,[r.id]:{...d,[key]:value}}));
         return <>
           <tr key={r.id}>
-            <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}</small></td>
+            <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}{r.manuallyEdited?' · edited':''}</small></td>
             <td>{Number(d.workingDays)}</td>
             <td>{currency(d.monthlyPayment)}</td>
             <td>{currency(d.perDay)}</td>
@@ -403,7 +426,7 @@ function RunDetail(){
             <td><small>{d.details || `Gross ${currency(r.grossSalary)} | Leave ${Number(trace.leaveUsed ?? r.stwiLeaveDays)} | Late ${r.lateMarks} | Paid ${Number(r.paidLeaveAllowance)} | P.Tax ${currency(r.ptax)}`}</small></td>
             <td>
               <button onClick={()=>editing?setPayrollEditId(null):startPayrollEdit(r)}>{editing?'Close':'Edit'}</button>{' '}
-              <button onClick={async()=>{const method=window.confirm('OK = FULL, Cancel = EMI (3 months)');await action('deposit',()=>api.setDepositMethod(id!,r.employeeId,method?'FULL':'EMI_3_MONTHS'))}}>Deposit</button>{' '}
+              <button onClick={async()=>{const choice=(window.prompt('Security deposit method: type FULL or EMI (3 installments)','FULL')||'').trim().toUpperCase();if(!choice)return;if(choice!=='FULL'&&choice!=='EMI'){window.alert('Type FULL or EMI.');return;}await action('deposit',()=>api.setDepositMethod(id!,r.employeeId,choice==='FULL'?'FULL':'EMI_3_MONTHS'))}}>Deposit</button>{' '}
               <button onClick={()=>{if(window.confirm('Undo the selected security deposit for this employee?')) void action('reset deposit',()=>api.resetDepositMethod(id!,r.employeeId))}}>Undo</button>
             </td>
           </tr>
@@ -431,30 +454,23 @@ function RunDetail(){
               <label className="wide">Details<input value={d.details} onChange={e=>setD('details',e.target.value)}/></label>
               <div className="editor-actions">
                 <button onClick={async () => {
-                  await action('edit payroll', () => api.updatePayrollResult(id!, r.employeeId, {
-                    grossSalary: Number(d.monthlyPayment),
-                    paidLeaveAllowance: Number(d.paidLeave),
-                    lateMarks: Number(d.lateMark),
-                    lateLeaveDeduction: Number(d.deductionLeave),
-                    excessLeaveDeduction: 0,
-                    doubleDeductionLeave: Number(d.doubleDeductionLeave),
-                    penalty: Number(d.penalty),
-                    securityDeposit: Number(d.securityDeposit),
-                    ptax: Number(d.ptax),
-                    otherDeductions: Number(d.otherDeductions),
-                    payableAmount: Number(d.payableAmount),
-                    workingDays: Number(d.workingDays),
-                    dailySalary: Number(d.perDay),
-                    leaveDeductionAmount: Number(d.leave),
-                    halfDayCount: Number(d.halfDay),
-                    totalLeave: Number(d.totalLeave),
-                    renewalDate: d.renewalDate || null,
-                    heldSecurityDeposit: Number(d.deposit),
-                    details: d.details || '',
-                    joinDate: d.joinDate || null,
-                  }));
+                  // V1.7: send only the values the user changed. Unchanged values stay
+                  // calculated; the payable recalculates unless it was edited itself.
+                  const initial=payrollDraft({...r,__fresh:true});
+                  const map:[string,string][]=[['monthlyPayment','grossSalary'],['perDay','dailySalary'],['leave','leaveDeductionAmount'],['penalty','penalty'],['ptax','ptax'],['payableAmount','payableAmount'],['deductionLeave','deductionLeave'],['halfDay','halfDayCount'],['lateMark','lateMarks'],['paidLeave','paidLeaveAllowance'],['doubleDeductionLeave','doubleDeductionLeave'],['totalLeave','totalLeave'],['workingDays','workingDays'],['deposit','heldSecurityDeposit'],['securityDeposit','securityDeposit'],['otherDeductions','otherDeductions'],['joinDate','joinDate'],['renewalDate','renewalDate'],['details','details']];
+                  const payload:any={};
+                  for(const [draftKey,apiKey] of map){ if(String(d[draftKey]??'')!==String(initial[draftKey]??'')) payload[apiKey]=d[draftKey]===''?null:d[draftKey]; }
+                  if(!Object.keys(payload).length){setPayrollEditId(null);return;}
+                  await action('edit payroll', () => api.updatePayrollResult(id!, r.employeeId, payload));
+                  setPayrollDrafts(prev=>{const next={...prev};delete next[r.id];return next;});
                   setPayrollEditId(null);
                 }}>Save Changes</button>
+                <button onClick={async () => {
+                  if(!window.confirm('Remove all manual edits for this employee and use the calculated values?'))return;
+                  await action('reset payroll edits', () => api.updatePayrollResult(id!, r.employeeId, { resetOverrides: true }));
+                  setPayrollDrafts(prev=>{const next={...prev};delete next[r.id];return next;});
+                  setPayrollEditId(null);
+                }}>Clear Edits</button>
                 <button onClick={() => setPayrollEditId(null)}>Cancel</button>
               </div>
             </div>
@@ -474,7 +490,7 @@ function RunDetail(){
       {run.status==='FINALIZED'?<button onClick={()=>action('reopen',()=>api.reopenRun(id!))}>Reopen</button>:<button onClick={()=>action('finalize',()=>api.finalizeRun(id!))}>Finalize</button>}</div></section>
   </div>
 }
-function Reviews(){const[runs,setRuns]=useState<Page<Run>>();const[runId,setRunId]=useState('');const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[reviews,setReviews]=useState<Page<Review>>();const[filters,setFilters]=useState({status:'OPEN',type:'',search:'',penaltyPresent:'',doubleDeductionLeave:''});useEffect(()=>{api.runs({page:1,pageSize:100}).then(r=>{setRuns(r);if(!runId&&r.data[0])setRunId(r.data[0].id)}).catch(()=>{})},[]);useEffect(()=>{if(runId)api.reviews(runId,{...filters,page,pageSize}).then(setReviews).catch(()=>{})},[runId,page,pageSize,JSON.stringify(filters)]);return <div><div className="page-head"><div><h1>Manual Review</h1><p>Review exceptions across a selected run.</p></div></div><div className="panel"><div className="filters"><select value={runId} onChange={e=>{setRunId(e.target.value);setPage(1)}}>{runs?.data.map(r=><option key={r.id} value={r.id}>{monthName(r.month)} {r.year}</option>)}</select><select value={filters.status} onChange={e=>setFilters({...filters,status:e.target.value})}><option value="">All</option><option value="OPEN">Open</option><option value="RESOLVED">Resolved</option><option value="REJECTED">Rejected</option></select><select value={filters.type} onChange={e=>setFilters({...filters,type:e.target.value})}><option value="">All Types</option>{['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','EMPLOYEE_MISMATCH','UNEXPECTED_DURATION','OTHER'].map(x=><option key={x}>{x}</option>)}</select><input placeholder="Search employee" value={filters.search} onChange={e=>setFilters({...filters,search:e.target.value})}/><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPage(1)}}/></div>{reviews?.data.length?<table><thead><tr><th>Status</th><th>Employee</th><th>Type</th><th>Description</th><th>Action</th></tr></thead><tbody>{reviews.data.map(r=><tr key={r.id}><td>{r.status}</td><td>{r.employee?.name||'—'}</td><td>{r.type}</td><td>{r.description}</td><td>{r.status==='OPEN'&&<button onClick={()=>api.resolveReview(r.id,{resolution:'Resolved in web app',penaltyAmount:0,doubleDeductionLeave:false}).then(()=>api.reviews(runId,{...filters,page,pageSize}).then(setReviews))}>Resolve</button>} {r.status!=='RESOLVED'&&<button onClick={()=>{if(window.confirm('Delete this review?'))api.deleteReview(r.id).then(()=>api.reviews(runId,{...filters,page,pageSize}).then(setReviews))}}>Delete</button>}</td></tr>)}</tbody></table>:<div className="empty">No reviews.</div>}<PaginationControls pagination={reviews?.pagination} onChange={setPage}/></div></div>}
+function Reviews(){const[runs,setRuns]=useState<Page<Run>>();const[runId,setRunId]=useState('');const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[reviews,setReviews]=useState<Page<Review>>();const[filters,setFilters]=useState({status:'OPEN',type:'',search:'',penaltyPresent:'',doubleDeductionLeave:''});useEffect(()=>{api.runs({page:1,pageSize:100}).then(r=>{setRuns(r);if(!runId&&r.data[0])setRunId(r.data[0].id)}).catch(()=>{})},[]);useEffect(()=>{if(runId)api.reviews(runId,{...filters,page,pageSize}).then(setReviews).catch(()=>{})},[runId,page,pageSize,JSON.stringify(filters)]);return <div><div className="page-head"><div><h1>Manual Review</h1><p>Review exceptions across a selected run.</p></div></div><div className="panel"><div className="filters"><select value={runId} onChange={e=>{setRunId(e.target.value);setPage(1)}}>{runs?.data.map(r=><option key={r.id} value={r.id}>{monthName(r.month)} {r.year}</option>)}</select><select value={filters.status} onChange={e=>setFilters({...filters,status:e.target.value})}><option value="">All</option><option value="OPEN">Open</option><option value="RESOLVED">Resolved</option><option value="REJECTED">Rejected</option></select><select value={filters.type} onChange={e=>setFilters({...filters,type:e.target.value})}><option value="">All Types</option>{['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','EMPLOYEE_MISMATCH','UNEXPECTED_DURATION','OTHER'].map(x=><option key={x}>{x}</option>)}</select><input placeholder="Search employee" value={filters.search} onChange={e=>setFilters({...filters,search:e.target.value})}/><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPage(1)}}/></div>{reviews?.data.length?<table><thead><tr><th>Status</th><th>Employee</th><th>Type</th><th>Description</th><th>Action</th></tr></thead><tbody>{reviews.data.map(r=><tr key={r.id}><td>{r.status}</td><td>{r.employee?.name||'—'}</td><td>{r.type}</td><td>{r.description}</td><td>{r.status==='OPEN'&&<button onClick={()=>{const payload=askReviewResolution(r);if(!payload)return;api.resolveReview(r.id,payload).then(()=>api.reviews(runId,{...filters,page,pageSize}).then(setReviews)).catch(e=>window.alert(errMessage(e)))}}>Resolve</button>} {r.status!=='RESOLVED'&&<button onClick={()=>{if(window.confirm('Delete this review?'))api.deleteReview(r.id).then(()=>api.reviews(runId,{...filters,page,pageSize}).then(setReviews))}}>Delete</button>}</td></tr>)}</tbody></table>:<div className="empty">No reviews.</div>}<PaginationControls pagination={reviews?.pagination} onChange={setPage}/></div></div>}
 function Settings(){const[rules,setRules]=useState<any[]>([]);const[search,setSearch]=useState('');const[error,setError]=useState('');useEffect(()=>{api.rules().then(setRules).catch(e=>setError(errMessage(e)))},[]);return <div><div className="page-head"><div><h1>Rule Management</h1><p>Versioned business rules.</p></div></div><ErrorBox message={error}/><div className="panel"><div className="filters"><input placeholder="Search rule" value={search} onChange={e=>setSearch(e.target.value)}/></div><table><thead><tr><th>Rule</th><th>Value</th><th>Effective</th><th></th></tr></thead><tbody>{rules.filter(r=>String(r.key).toLowerCase().includes(search.toLowerCase())||String(r.value).toLowerCase().includes(search.toLowerCase())).map(r=><RuleRow key={r.key} rule={r}/>)}</tbody></table></div></div>}
 function RuleRow({rule}:{rule:any}){const[value,setValue]=useState(String(rule.value));const[saved,setSaved]=useState(false);return <tr><td>{rule.key}</td><td><input value={value} onChange={e=>{setValue(e.target.value);setSaved(false)}}/></td><td>{new Date(rule.effectiveFrom).toLocaleDateString('en-IN')}</td><td><button onClick={async()=>{await api.updateRule(rule.key,value);setSaved(true)}}>{saved?'Saved':'Save'}</button></td></tr>}
 function Payroll(){const nav=useNavigate();const[runs,setRuns]=useState<Page<Run>>();const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[filters,setFilters]=useState({year:'',month:'',status:'',search:''});useEffect(()=>{api.runs({...filters,page,pageSize}).then(setRuns).catch(()=>{})},[page,pageSize,JSON.stringify(filters)]);return <div><div className="page-head"><div><h1>Payroll</h1><p>Open a run to review payroll and export.</p></div></div><div className="panel"><div className="filters"><input placeholder="Search year" value={filters.search} onChange={e=>setFilters({...filters,search:e.target.value})}/><select value={filters.year} onChange={e=>setFilters({...filters,year:e.target.value})}><option value="">All Years</option>{Array.from({length:7},(_,i)=>String(new Date().getFullYear()-i)).map(y=><option key={y}>{y}</option>)}</select><select value={filters.month} onChange={e=>setFilters({...filters,month:e.target.value})}><option value="">All Months</option>{Array.from({length:12},(_,i)=><option key={i+1} value={i+1}>{monthName(i+1)}</option>)}</select><select value={filters.status} onChange={e=>setFilters({...filters,status:e.target.value})}><option value="">All Statuses</option>{['DRAFT','PROCESSING','REVIEW','FINALIZED','REOPENED'].map(x=><option key={x}>{x}</option>)}</select><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPage(1)}}/></div>{runs?.data.map(r=><div className="card" key={r.id}><strong>{monthName(r.month)} {r.year}</strong><span>{r.status}</span><button onClick={()=>nav(`/runs/${r.id}`)}>Open</button></div>)}<PaginationControls pagination={runs?.pagination} onChange={setPage}/></div></div>}
@@ -509,6 +525,6 @@ function App(){
     return <Login onLogin={setUser} />;
   }
 
-  return <div className="app"><aside><div className="brand">STWI</div><div className="userbox"><strong>{user.name}</strong><span>{user.role}</span></div><nav><Link to="/">Dashboard</Link><Link to="/employees">Employees</Link><Link to="/runs">Monthly Run</Link><Link to="/reviews">Manual Review</Link><Link to="/payroll">Payroll</Link><Link to="/settings">Rules</Link></nav><button className="logout" onClick={()=>{localStorage.removeItem('accessToken');setUser(null)}}>Logout</button></aside><main><Routes><Route path="/" element={<Dashboard user={user}/>}/><Route path="/employees" element={<Employees/>}/><Route path="/employees/:id" element={<EmployeeDetail/>}/><Route path="/runs" element={<Runs/>}/><Route path="/runs/:id" element={<RunDetail/>}/><Route path="/reviews" element={<Reviews/>}/><Route path="/payroll" element={<Payroll/>}/><Route path="/settings" element={<Settings/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes></main></div>}
+  return <div className="app"><aside><div className="brand"><div className="brand-logo"><img src={stwiLogo} alt="STWI"/></div><span className="brand-name">Attendance &amp; Payroll</span></div><div className="userbox"><strong>{user.name}</strong><span>{user.role}</span></div><nav><NavLink to="/" end>Dashboard</NavLink><NavLink to="/employees">Employees</NavLink><NavLink to="/runs">Monthly Run</NavLink><NavLink to="/reviews">Manual Review</NavLink><NavLink to="/payroll">Payroll</NavLink><NavLink to="/settings">Rules</NavLink></nav><button className="logout" onClick={()=>{localStorage.removeItem('accessToken');setUser(null)}}>Logout</button></aside><main><Routes><Route path="/" element={<Dashboard user={user}/>}/><Route path="/employees" element={<Employees/>}/><Route path="/employees/:id" element={<EmployeeDetail/>}/><Route path="/runs" element={<Runs/>}/><Route path="/runs/:id" element={<RunDetail/>}/><Route path="/reviews" element={<Reviews/>}/><Route path="/payroll" element={<Payroll/>}/><Route path="/settings" element={<Settings/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes></main></div>}
 
 export default App;

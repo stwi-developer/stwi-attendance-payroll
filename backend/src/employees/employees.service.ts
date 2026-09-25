@@ -127,9 +127,14 @@ export class EmployeesService {
     requiredDeposit - alreadyHeld,
   );
 
+  // V1.7: when no salary date is given, the salary applies from the joining
+  // date (previously "today", which made a new employee's salary invisible to
+  // payroll runs for earlier months).
   const effectiveFrom = data.salaryEffectiveFrom
     ? new Date(data.salaryEffectiveFrom)
-    : new Date();
+    : data.joiningDate
+      ? new Date(data.joiningDate)
+      : new Date();
 
   const result = await this.prisma.$transaction(async (tx) => {
     const employee = await tx.employee.create({

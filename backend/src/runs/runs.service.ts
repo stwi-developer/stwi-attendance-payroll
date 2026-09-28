@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import * as crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import * as ExcelJS from 'exceljs';
+import { codeKey } from '../utils/employee-code';
 import { PrismaService } from '../prisma.service';
 import { AuditService } from '../audit.service';
 import { SecurityDepositService } from '../security-deposit.service';
@@ -438,6 +439,8 @@ export type PayrollBase = {
   ptax: number;
   lateMarkThreshold: number;
   leavePerThreshold: number;
+  /** V1.9: days of the month before the joining date / after the exit date (not paid) */
+  notEmployedDays?: number;
 };
 
 const OVERRIDE_NUMERIC_FIELDS = ['grossSalary', 'dailySalary', 'deductionLeave', 'leaveDeductionAmount', 'penalty', 'ptax', 'payableAmount', 'lateMarks', 'paidLeaveAllowance', 'doubleDeductionLeave'] as const;
@@ -459,7 +462,8 @@ export function computePayroll(base: PayrollBase, overrides: Record<string, any>
   const threshold = base.lateMarkThreshold > 0 ? base.lateMarkThreshold : 3;
   const lateLeaveDeduction = Math.floor(lateMarks / threshold) * (base.leavePerThreshold || 1);
   const beyondAllowance = money(Math.max(0, base.leaveUsed + lateLeaveDeduction - paidLeaveAllowance));
-  const deductionLeave = pick('deductionLeave', money(beyondAllowance + doubleDeductionLeave));
+  // V1.9: days before joining / after exit are deducted like DDL (outside the paid-leave allowance)
+  const deductionLeave = pick('deductionLeave', money(beyondAllowance + doubleDeductionLeave + (base.notEmployedDays ?? 0)));
   const excessLeaveDeduction = money(Math.max(0, beyondAllowance - lateLeaveDeduction));
   const dailySalary = pick('dailySalary', grossSalary / Math.max(1, base.calendarDays));
   const leaveDeductionAmount = pick('leaveDeductionAmount', money(dailySalary * deductionLeave));
@@ -485,6 +489,7 @@ function traceOf(v: ReturnType<typeof computePayroll>, base: PayrollBase, securi
     lateMarks: v.lateMarks,
     lateLeaveDeduction: v.lateLeaveDeduction,
     doubleDeductionLeave: v.doubleDeductionLeave,
+    notEmployedDays: base.notEmployedDays ?? 0,
     totalDeductionLeave: v.deductionLeave,
     attendanceDeduction: v.leaveDeductionAmount,
     penalty: v.penalty,
@@ -512,6 +517,7 @@ function baseFromResult(r: any): PayrollBase {
     ptax: num(t.ptax, r.ptax),
     lateMarkThreshold: num(snap.late_mark_threshold, 3),
     leavePerThreshold: num(snap.leave_per_threshold, 1),
+    notEmployedDays: num(t.notEmployedDays, 0),
   };
 }
 
@@ -586,7 +592,12 @@ export class RunsService {
       }
       const filenameEmployeeCode = parseFilename(file.originalname);
       const employeeCode = parsed.employeeCode || filenameEmployeeCode;
-      const employee = employeeCode ? await this.prisma.employee.findUnique({ where: { employeeCode } }) : null;
+      let employee = employeeCode ? await this.prisma.employee.findUnique({ where: { employeeCode } }) : null;
+      if (!employee && employeeCode) {
+        // e.g. file "Attendance_entries_2026-SEP-06_..." for Employee ID 2026/sep/06
+        const all = await this.prisma.employee.findMany({ where: { deletedAt: null } });
+        employee = all.find((e) => codeKey(e.employeeCode) === codeKey(employeeCode)) ?? null;
+      }
 
       const attendanceFile = await this.prisma.attendanceFile.create({
         data: {
@@ -602,7 +613,7 @@ export class RunsService {
         out.push({ file: file.originalname, status: 'MISMATCH', employeeCode });
         continue;
       }
-      if (filenameEmployeeCode && parsed.employeeCode && filenameEmployeeCode !== parsed.employeeCode) {
+      if (filenameEmployeeCode && parsed.employeeCode && codeKey(filenameEmployeeCode) !== codeKey(parsed.employeeCode)) {
         // V1.7: mark the file itself as MISMATCH so Process does not later
         // flag it PROCESSED although no rows were imported from it.
         await this.prisma.attendanceFile.update({ where: { id: attendanceFile.id }, data: { status: 'MISMATCH', errorMessage: `Filename suggests ${filenameEmployeeCode}, worksheet contains ${parsed.employeeCode}.` } });
@@ -1108,7 +1119,8 @@ const totalHoursIdx = findCol(headers, [
     const sourceEmployeeIds = importedSourceRows.map((r) => r.employeeId);
 
     const employees = await this.prisma.employee.findMany({
-      where: { id: { in: sourceEmployeeIds }, status: 'ACTIVE' },
+      // V1.9: an employee who left during/after this month is still paid for it
+      where: { id: { in: sourceEmployeeIds }, deletedAt: null, OR: [{ status: 'ACTIVE' }, { dateOfExit: { gte: new Date(Date.UTC(run.year, run.month - 1, 1)) } }] },
       include: {
         salaryHistory: {
           where: { effectiveFrom: { lte: monthEnd(run.year, run.month) } },
@@ -1205,11 +1217,27 @@ const totalHoursIdx = findCol(headers, [
       data: { status: 'PROCESSED' },
     });
 
+    await this.flagLeavers(run);
     const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
     const status = 'REVIEW';
     const updated = await this.prisma.payrollRun.update({ where: { id: runId }, data: { status, processedAt: new Date() } });
     await this.audit.log({ userId, action: 'PROCESS_ATTENDANCE', entityType: 'PayrollRun', entityId: runId, afterJson: { importedCount, openReviews } });
     return { run: updated, importedCount, openReviews };
+  }
+
+  /**
+   * V1.9: an employee whose Date of Exit falls in this month gets a Manual Review:
+   * the last month is settled by hand (Payroll Review edits), as STWI decided.
+   */
+  private async flagLeavers(run: { id: string; year: number; month: number }) {
+    const start = new Date(Date.UTC(run.year, run.month - 1, 1));
+    const end = new Date(Date.UTC(run.year, run.month, 0, 23, 59, 59));
+    const withAttendance = await this.prisma.attendanceRecord.findMany({ where: { payrollRunId: run.id }, select: { employeeId: true }, distinct: ['employeeId'] });
+    const leavers = await this.prisma.employee.findMany({ where: { id: { in: withAttendance.map((a) => a.employeeId) }, deletedAt: null, dateOfExit: { gte: start, lte: end } } });
+    for (const e of leavers) {
+      const exit = e.dateOfExit!.toISOString().slice(0, 10).split('-').reverse().join('-');
+      await this.ensureReview(run.id, e.id, 'OTHER', `Last month: ${e.name} left on ${exit} (Date of Exit). Check this month's pay by hand in Payroll Review (days after the exit, security deposit, final settlement), then resolve this review.`);
+    }
   }
 
   private async ensureReview(runId: string, employeeId: string, type: any, description: string) {
@@ -1281,6 +1309,7 @@ const totalHoursIdx = findCol(headers, [
     if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
     const sourceCount = await this.prisma.attendanceFile.count({ where: { payrollRunId: runId, status: 'PROCESSED' } });
     if (!sourceCount) throw new BadRequestException('Process at least one uploaded attendance file before calculating payroll.');
+    await this.flagLeavers(run);
     const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
     if (openReviews) throw new BadRequestException(`Resolve all ${openReviews} open Manual Review item(s) before calculating payroll.`);
 
@@ -1294,7 +1323,8 @@ const totalHoursIdx = findCol(headers, [
     if (!sourceEmployeeIds.length) throw new BadRequestException('No uploaded attendance records are available for payroll calculation.');
 
     const employees = await this.prisma.employee.findMany({
-      where: { id: { in: sourceEmployeeIds }, status: 'ACTIVE' },
+      // V1.9: an employee who left during/after this month is still paid for it
+      where: { id: { in: sourceEmployeeIds }, deletedAt: null, OR: [{ status: 'ACTIVE' }, { dateOfExit: { gte: new Date(Date.UTC(run.year, run.month - 1, 1)) } }] },
       include: {
         salaryHistory: {
           where: { effectiveFrom: { lte: monthEnd(run.year, run.month) } },
@@ -1315,14 +1345,28 @@ const totalHoursIdx = findCol(headers, [
       ]);
 
       const calendarDays = new Date(Date.UTC(run.year, run.month, 0)).getUTCDate();
-      const weekOffDays = records.filter(r => r.isWeekOff && !r.isHoliday).length;
-      const holidayDays = records.filter(r => r.isHoliday && !r.isWeekOff).length;
-      const leaveUsed = money(records.reduce((s, r) => s + Number(r.leaveFraction ?? 0), 0));
-      const lateMarks = records.filter(r => r.isLate).length;
+      // V1.9: days before the joining date are not paid (deducted like DDL) and
+      // attendance on those days is ignored. Leavers: see lastPaid below.
+      const DAY = 86400000;
+      const utcDay = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      const monthStart = Date.UTC(run.year, run.month - 1, 1);
+      const monthLast = Date.UTC(run.year, run.month - 1, calendarDays);
+      const firstPaid = emp.joiningDate ? Math.max(monthStart, utcDay(emp.joiningDate)) : monthStart;
+      // STWI (28 Sep): the last month of someone who leaves is checked by hand
+      // (a Manual Review is raised), so the exit date does not cut the pay here.
+      const lastPaid = monthLast;
+      if (lastPaid < firstPaid) continue; // joined after this month
+      const notEmployedDays = calendarDays - (Math.round((lastPaid - firstPaid) / DAY) + 1);
+      const employed = records.filter(r => { const t = utcDay(r.workDate); return t >= firstPaid && t <= lastPaid; });
+      const weekOffDays = employed.filter(r => r.isWeekOff && !r.isHoliday).length;
+      const holidayDays = employed.filter(r => r.isHoliday && !r.isWeekOff).length;
+      const leaveUsed = money(employed.reduce((s, r) => s + Number(r.leaveFraction ?? 0), 0));
+      const lateMarks = employed.filter(r => r.isLate).length;
       const doubleDeductionLeave = reviews.reduce((s, r) => s + (r.doubleDeductionLeave ? rules.double_deduction_leave_days : 0), 0);
       const penalty = money(reviews.reduce((s, r) => s + Number(r.penaltyAmount ?? 0), 0));
       // Confirmed STWI rule: gross salary strictly greater than ₹12,000 attracts ₹200 P.Tax.
-      const ptax = gross > rules.ptax_threshold ? rules.ptax_amount : 0;
+      // V1.9: P.Tax can be switched off per employee (Employee > Payroll details)
+      const ptax = emp.professionalTaxApplicable && gross > rules.ptax_threshold ? rules.ptax_amount : 0;
 
       const held = await this.deposits.getHeldAmount(emp.id);
       let deposit = await this.prisma.securityDeposit.findFirst({
@@ -1408,6 +1452,7 @@ const totalHoursIdx = findCol(headers, [
         ptax,
         lateMarkThreshold: rules.late_mark_threshold,
         leavePerThreshold: rules.leave_per_threshold,
+        notEmployedDays,
       };
       const calculated = computePayroll(base, {}, securityDeposit, otherDeductions);
       // V1.7: manual Payroll Review edits are re-applied on every recalculation

@@ -84,10 +84,13 @@ model User {
 }
 
 model Department {
-  id        String     @id @default(cuid()) @db.VarChar(36)
-  name      String     @unique
-  active    Boolean    @default(true)
-  createdAt DateTime   @default(now())
+  id        String       @id @default(cuid()) @db.VarChar(36)
+  name      String       @unique
+  active    Boolean      @default(true)
+  parentId  String?      @db.VarChar(36)
+  createdAt DateTime     @default(now())
+  parent    Department?  @relation("DepartmentParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Department[] @relation("DepartmentParent")
   employees Employee[]
 }
 
@@ -97,6 +100,14 @@ model Designation {
   active    Boolean    @default(true)
   createdAt DateTime   @default(now())
   employees Employee[]
+}
+
+// V1.9: Zoho "Employment Type" values (Permanent, On Contract, ...)
+model EmploymentType {
+  id        String   @id @default(cuid()) @db.VarChar(36)
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
 }
 
 model Employee {
@@ -110,6 +121,32 @@ model Employee {
   designationId String?        @db.VarChar(36)
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  // V1.9: Zoho People "Employee View" fields (yellow = from Zoho export)
+  firstName       String?   @db.VarChar(100)
+  lastName        String?   @db.VarChar(100)
+  employmentType  String?   @db.VarChar(100)
+  totalExperience String?   @db.VarChar(100)
+  dateOfBirth     DateTime?
+  gender          String?   @db.VarChar(30)
+  maritalStatus   String?   @db.VarChar(30)
+  // V1.9: green fields (filled manually in the app)
+  personalMobile   String?   @db.VarChar(30)
+  personalEmail    String?   @db.VarChar(191)
+  dateOfExit       DateTime?
+  permanentAddress String?   @db.Text
+  aadhaar          String?   @db.VarChar(20)
+  pan              String?   @db.VarChar(20)
+  // V1.9: payroll / bank details (manual)
+  professionalTaxApplicable Boolean @default(true)
+  bankAccountName           String? @db.VarChar(150)
+  bankName                  String? @db.VarChar(150)
+  bankAccountNumber         String? @db.VarChar(40)
+  bankIfsc                  String? @db.VarChar(20)
+  notes                     String? @db.Text
+  // V1.9: deleted employees keep their payroll history; personal data is erased
+  deletedAt   DateTime?
+  deletedById String?   @db.VarChar(36)
 
   department          Department?                  @relation(fields: [departmentId], references: [id])
   designation         Designation?                 @relation(fields: [designationId], references: [id])
@@ -338,4 +375,43 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// V1.9: Zoho Employee View import, kept in the database until every employee is created
+model EmployeeImportBatch {
+  id           String              @id @default(cuid()) @db.VarChar(36)
+  fileName     String              @db.VarChar(255)
+  status       String              @default("OPEN") @db.VarChar(20)
+  missingJson  Json?
+  createdById  String?             @db.VarChar(36)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  rows         EmployeeImportRow[]
+}
+
+model EmployeeImportRow {
+  id           String              @id @default(cuid()) @db.VarChar(36)
+  batchId      String              @db.VarChar(36)
+  rowNumber    Int
+  employeeCode String              @db.VarChar(100)
+  action       String              @db.VarChar(20)
+  status       String              @db.VarChar(20)
+  zohoJson     Json
+  manualJson   Json?
+  problemsJson Json?
+  diffJson     Json?
+  employeeId   String?             @db.VarChar(36)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  batch        EmployeeImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+}
+
+// V1.9: popup texts and button labels, editable by the CEO in Settings
+model AppLabel {
+  key         String   @id @db.VarChar(120)
+  value       String   @db.Text
+  updatedById String?  @db.VarChar(36)
+  updatedAt   DateTime @updatedAt
 }

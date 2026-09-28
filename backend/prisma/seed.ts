@@ -14,10 +14,13 @@ async function main() {
   for (const user of users) {
     await prisma.user.upsert({ where: { email: user.email }, update: { passwordHash, name: user.name, role: user.role, status: 'ACTIVE' }, create: { ...user, passwordHash } });
   }
-  const departmentNames = ['General', 'Administration', 'Accounts', 'IT', 'Operations'];
-  const designationNames = ['Employee', 'Executive', 'Manager', 'HR', 'Accounts Executive'];
+  // V1.9: departments and employment types follow Zoho People. Designations
+  // are added from the Zoho Employee View import (or in the employee form).
+  const departmentNames = ['Accounts', 'Backoffice', 'Digital Marketing', 'HR', 'SEO', 'Web'];
   for (const name of departmentNames) await prisma.department.upsert({ where: { name }, update: { active: true }, create: { name } });
-  for (const name of designationNames) await prisma.designation.upsert({ where: { name }, update: { active: true }, create: { name } });
+  const hr = await prisma.department.findUnique({ where: { name: 'HR' } });
+  await prisma.department.updateMany({ where: { name: { in: ['SEO', 'Web'] } }, data: { parentId: hr?.id } });
+  for (const name of ['Permanent', 'On Contract', 'Temporary', 'Trainee']) await prisma.employmentType.upsert({ where: { name }, update: { active: true }, create: { name } });
 
   const rules = [
     ['paid_leave_allowance', '1.5', 'Monthly paid leave allowance; no carry-forward.'],

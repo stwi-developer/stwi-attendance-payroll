@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import * as crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import * as ExcelJS from 'exceljs';
+import { codeKey } from '../utils/employee-code';
 import { PrismaService } from '../prisma.service';
 import { AuditService } from '../audit.service';
 import { SecurityDepositService } from '../security-deposit.service';
@@ -124,6 +125,11 @@ function isWeekendDay(d: Date) {
   if (day === 6) { const ordinal = Math.floor((d.getUTCDate() - 1) / 7) + 1; return ordinal === 1 || ordinal === 3; }
   return false;
 }
+// V1.9: STWI date format dd/Mmm/yyyy in Excel exports
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const XL_DATE = 'dd\\/mmm\\/yyyy';
+const XL_TIME = 'hh:mm AM/PM';
+const XL_DATETIME = 'dd\\/mmm\\/yyyy hh:mm AM/PM';
 function sameDay(a: Date, b: Date) { return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10); }
 function dateKey(d: Date) { return d.toISOString().slice(0, 10); }
 function expectedLogin(status: string, leaveType: 'full' | 'first_half' | 'second_half' | 'half_day' | 'none') {
@@ -284,8 +290,13 @@ export type AttendanceDecision = {
   reviewReason: string;
 };
 
+const LUNCH_START = 12 * 60 + 30;
+const LUNCH_END = 13 * 60 + 30;
+/** check-out notes like "no lunch taken", "lunch not taken", "lunch skipped", "without lunch" */
+const NO_LUNCH_NOTE = /\b(no|not|skip\w*|without)\s*(taken\s*)?lunch|\blunch\s*(not|skip\w*|was not)/i;
+
 export function classifyAttendanceRow(
-  row: { status: string; totalHours: number | null; firstCheckIn: Date | null; firstCheckInMinutes: number | null; lastCheckOut: Date | null },
+  row: { status: string; totalHours: number | null; firstCheckIn: Date | null; firstCheckInMinutes: number | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkInNotes?: string | null; checkOutNotes?: string | null },
   workDate: Date,
   cfg: { minHalf: number; maxHalf: number; fullDayHours: number },
 ): AttendanceDecision {
@@ -355,7 +366,25 @@ export function classifyAttendanceRow(
       // Q4: short hours -> review instead of automatic shortfall leave.
       const halfDayCase = ['half_day', 'first_half', 'second_half'].includes(classification.type);
       const required = halfDayCase ? cfg.minHalf : cfg.fullDayHours;
-      if (hours != null && hours < required) {
+      const lastMin = row.lastCheckOutMinutes ?? timeMinutes(row.lastCheckOut);
+      if (halfDayCase && /stwi\s*leave/i.test(row.status) && firstMin != null && lastMin != null) {
+        // V1.9 (STWI 28 Sep): lunch 12:30-13:30 is compulsory. On an STWI half-day
+        // leave the lunch hour inside check-in..check-out is taken off, unless the
+        // check-out note says no lunch was taken. 4:00 or more is needed.
+        const span = Math.max(0, lastMin - firstMin);
+        const lunch = Math.max(0, Math.min(lastMin, LUNCH_END) - Math.max(firstMin, LUNCH_START));
+        const noLunch = NO_LUNCH_NOTE.test(row.checkOutNotes ?? '');
+        const worked = Math.round(span - (noLunch ? 0 : lunch));
+        if (worked < Math.round(required * 60)) {
+          d.status = 'MANUAL_REVIEW';
+          d.reviewType = 'UNEXPECTED_DURATION';
+          d.reviewReason = lunch > 0 && !noLunch
+            ? `STWI half day: ${formatHours(worked / 60)} after the 12:30-13:30 lunch hour (needs ${formatHours(required)}; no "no lunch taken" check-out note) - check and decide leave`
+            : `STWI half day: only ${formatHours(worked / 60)} worked (needs ${formatHours(required)}) - check and decide leave`;
+          if (row.checkInNotes) d.reviewReason += `. Check-in note: "${row.checkInNotes.slice(0, 200)}"`;
+          if (row.checkOutNotes) d.reviewReason += `. Check-out note: "${row.checkOutNotes.slice(0, 200)}"`;
+        }
+      } else if (hours != null && hours < required) {
         d.status = 'MANUAL_REVIEW';
         d.reviewType = 'UNEXPECTED_DURATION';
         d.reviewReason = `Short hours (needs ${formatHours(required)}) - check status and decide leave`;
@@ -438,6 +467,8 @@ export type PayrollBase = {
   ptax: number;
   lateMarkThreshold: number;
   leavePerThreshold: number;
+  /** V1.9: days of the month before the joining date / after the exit date (not paid) */
+  notEmployedDays?: number;
 };
 
 const OVERRIDE_NUMERIC_FIELDS = ['grossSalary', 'dailySalary', 'deductionLeave', 'leaveDeductionAmount', 'penalty', 'ptax', 'payableAmount', 'lateMarks', 'paidLeaveAllowance', 'doubleDeductionLeave'] as const;
@@ -459,7 +490,8 @@ export function computePayroll(base: PayrollBase, overrides: Record<string, any>
   const threshold = base.lateMarkThreshold > 0 ? base.lateMarkThreshold : 3;
   const lateLeaveDeduction = Math.floor(lateMarks / threshold) * (base.leavePerThreshold || 1);
   const beyondAllowance = money(Math.max(0, base.leaveUsed + lateLeaveDeduction - paidLeaveAllowance));
-  const deductionLeave = pick('deductionLeave', money(beyondAllowance + doubleDeductionLeave));
+  // V1.9: days before joining / after exit are deducted like DDL (outside the paid-leave allowance)
+  const deductionLeave = pick('deductionLeave', money(beyondAllowance + doubleDeductionLeave + (base.notEmployedDays ?? 0)));
   const excessLeaveDeduction = money(Math.max(0, beyondAllowance - lateLeaveDeduction));
   const dailySalary = pick('dailySalary', grossSalary / Math.max(1, base.calendarDays));
   const leaveDeductionAmount = pick('leaveDeductionAmount', money(dailySalary * deductionLeave));
@@ -485,6 +517,7 @@ function traceOf(v: ReturnType<typeof computePayroll>, base: PayrollBase, securi
     lateMarks: v.lateMarks,
     lateLeaveDeduction: v.lateLeaveDeduction,
     doubleDeductionLeave: v.doubleDeductionLeave,
+    notEmployedDays: base.notEmployedDays ?? 0,
     totalDeductionLeave: v.deductionLeave,
     attendanceDeduction: v.leaveDeductionAmount,
     penalty: v.penalty,
@@ -512,6 +545,7 @@ function baseFromResult(r: any): PayrollBase {
     ptax: num(t.ptax, r.ptax),
     lateMarkThreshold: num(snap.late_mark_threshold, 3),
     leavePerThreshold: num(snap.leave_per_threshold, 1),
+    notEmployedDays: num(t.notEmployedDays, 0),
   };
 }
 
@@ -586,7 +620,12 @@ export class RunsService {
       }
       const filenameEmployeeCode = parseFilename(file.originalname);
       const employeeCode = parsed.employeeCode || filenameEmployeeCode;
-      const employee = employeeCode ? await this.prisma.employee.findUnique({ where: { employeeCode } }) : null;
+      let employee = employeeCode ? await this.prisma.employee.findUnique({ where: { employeeCode } }) : null;
+      if (!employee && employeeCode) {
+        // e.g. file "Attendance_entries_2026-SEP-06_..." for Employee ID 2026/sep/06
+        const all = await this.prisma.employee.findMany({ where: { deletedAt: null } });
+        employee = all.find((e) => codeKey(e.employeeCode) === codeKey(employeeCode)) ?? null;
+      }
 
       const attendanceFile = await this.prisma.attendanceFile.create({
         data: {
@@ -602,7 +641,7 @@ export class RunsService {
         out.push({ file: file.originalname, status: 'MISMATCH', employeeCode });
         continue;
       }
-      if (filenameEmployeeCode && parsed.employeeCode && filenameEmployeeCode !== parsed.employeeCode) {
+      if (filenameEmployeeCode && parsed.employeeCode && codeKey(filenameEmployeeCode) !== codeKey(parsed.employeeCode)) {
         // V1.7: mark the file itself as MISMATCH so Process does not later
         // flag it PROCESSED although no rows were imported from it.
         await this.prisma.attendanceFile.update({ where: { id: attendanceFile.id }, data: { status: 'MISMATCH', errorMessage: `Filename suggests ${filenameEmployeeCode}, worksheet contains ${parsed.employeeCode}.` } });
@@ -722,6 +761,8 @@ export class RunsService {
             lastCheckOut: row.lastCheckOut,
             workedHours: row.totalHours,
             sourceStatus: row.status,
+            checkInNotes: row.checkInNotes ?? null,
+            checkOutNotes: row.checkOutNotes ?? null,
             status,
             isLate: late,
             lateMinutes,
@@ -1037,6 +1078,10 @@ const totalHoursIdx = findCol(headers, [
       'Check-Out',
       'Logout',
     ]);
+    // V1.9: Zoho notes are kept and shown in the attendance table
+    const inNotesIdx = findCol(headers, ['Check-in Notes', 'Check In Notes']);
+    const outNotesIdx = findCol(headers, ['Check-out Notes', 'Check Out Notes']);
+    const note = (v: any) => { const t = String(v ?? '').trim(); return t ? t.slice(0, 2000) : null; };
 
     if (dateIdx < 0 || statusIdx < 0) {
       throw new Error('Attendance file must contain Date and Status columns.');
@@ -1076,6 +1121,9 @@ const totalHoursIdx = findCol(headers, [
   firstCheckInMinutes: sourceTimeMinutes(r[firstIdx]),
 
   lastCheckOut: asDate(r[lastIdx]),
+  lastCheckOutMinutes: sourceTimeMinutes(r[lastIdx]),
+  checkInNotes: inNotesIdx >= 0 ? note(r[inNotesIdx]) : null,
+  checkOutNotes: outNotesIdx >= 0 ? note(r[outNotesIdx]) : null,
 });
     }
 
@@ -1108,7 +1156,8 @@ const totalHoursIdx = findCol(headers, [
     const sourceEmployeeIds = importedSourceRows.map((r) => r.employeeId);
 
     const employees = await this.prisma.employee.findMany({
-      where: { id: { in: sourceEmployeeIds }, status: 'ACTIVE' },
+      // V1.9: an employee who left during/after this month is still paid for it
+      where: { id: { in: sourceEmployeeIds }, deletedAt: null, OR: [{ status: 'ACTIVE' }, { dateOfExit: { gte: new Date(Date.UTC(run.year, run.month - 1, 1)) } }] },
       include: {
         salaryHistory: {
           where: { effectiveFrom: { lte: monthEnd(run.year, run.month) } },
@@ -1205,11 +1254,27 @@ const totalHoursIdx = findCol(headers, [
       data: { status: 'PROCESSED' },
     });
 
+    await this.flagLeavers(run);
     const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
     const status = 'REVIEW';
     const updated = await this.prisma.payrollRun.update({ where: { id: runId }, data: { status, processedAt: new Date() } });
     await this.audit.log({ userId, action: 'PROCESS_ATTENDANCE', entityType: 'PayrollRun', entityId: runId, afterJson: { importedCount, openReviews } });
     return { run: updated, importedCount, openReviews };
+  }
+
+  /**
+   * V1.9: an employee whose Date of Exit falls in this month gets a Manual Review:
+   * the last month is settled by hand (Payroll Review edits), as STWI decided.
+   */
+  private async flagLeavers(run: { id: string; year: number; month: number }) {
+    const start = new Date(Date.UTC(run.year, run.month - 1, 1));
+    const end = new Date(Date.UTC(run.year, run.month, 0, 23, 59, 59));
+    const withAttendance = await this.prisma.attendanceRecord.findMany({ where: { payrollRunId: run.id }, select: { employeeId: true }, distinct: ['employeeId'] });
+    const leavers = await this.prisma.employee.findMany({ where: { id: { in: withAttendance.map((a) => a.employeeId) }, deletedAt: null, dateOfExit: { gte: start, lte: end } } });
+    for (const e of leavers) {
+      const exit = dateKey(e.dateOfExit!); // shown as dd/Mmm/yyyy by the app
+      await this.ensureReview(run.id, e.id, 'OTHER', `Last month: ${e.name} left on ${exit} (Date of Exit). Check this month's pay by hand in Payroll Review (days after the exit, security deposit, final settlement), then resolve this review.`);
+    }
   }
 
   private async ensureReview(runId: string, employeeId: string, type: any, description: string) {
@@ -1281,6 +1346,7 @@ const totalHoursIdx = findCol(headers, [
     if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
     const sourceCount = await this.prisma.attendanceFile.count({ where: { payrollRunId: runId, status: 'PROCESSED' } });
     if (!sourceCount) throw new BadRequestException('Process at least one uploaded attendance file before calculating payroll.');
+    await this.flagLeavers(run);
     const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
     if (openReviews) throw new BadRequestException(`Resolve all ${openReviews} open Manual Review item(s) before calculating payroll.`);
 
@@ -1294,7 +1360,8 @@ const totalHoursIdx = findCol(headers, [
     if (!sourceEmployeeIds.length) throw new BadRequestException('No uploaded attendance records are available for payroll calculation.');
 
     const employees = await this.prisma.employee.findMany({
-      where: { id: { in: sourceEmployeeIds }, status: 'ACTIVE' },
+      // V1.9: an employee who left during/after this month is still paid for it
+      where: { id: { in: sourceEmployeeIds }, deletedAt: null, OR: [{ status: 'ACTIVE' }, { dateOfExit: { gte: new Date(Date.UTC(run.year, run.month - 1, 1)) } }] },
       include: {
         salaryHistory: {
           where: { effectiveFrom: { lte: monthEnd(run.year, run.month) } },
@@ -1315,14 +1382,28 @@ const totalHoursIdx = findCol(headers, [
       ]);
 
       const calendarDays = new Date(Date.UTC(run.year, run.month, 0)).getUTCDate();
-      const weekOffDays = records.filter(r => r.isWeekOff && !r.isHoliday).length;
-      const holidayDays = records.filter(r => r.isHoliday && !r.isWeekOff).length;
-      const leaveUsed = money(records.reduce((s, r) => s + Number(r.leaveFraction ?? 0), 0));
-      const lateMarks = records.filter(r => r.isLate).length;
+      // V1.9: days before the joining date are not paid (deducted like DDL) and
+      // attendance on those days is ignored. Leavers: see lastPaid below.
+      const DAY = 86400000;
+      const utcDay = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      const monthStart = Date.UTC(run.year, run.month - 1, 1);
+      const monthLast = Date.UTC(run.year, run.month - 1, calendarDays);
+      const firstPaid = emp.joiningDate ? Math.max(monthStart, utcDay(emp.joiningDate)) : monthStart;
+      // STWI (28 Sep): the last month of someone who leaves is checked by hand
+      // (a Manual Review is raised), so the exit date does not cut the pay here.
+      const lastPaid = monthLast;
+      if (lastPaid < firstPaid) continue; // joined after this month
+      const notEmployedDays = calendarDays - (Math.round((lastPaid - firstPaid) / DAY) + 1);
+      const employed = records.filter(r => { const t = utcDay(r.workDate); return t >= firstPaid && t <= lastPaid; });
+      const weekOffDays = employed.filter(r => r.isWeekOff && !r.isHoliday).length;
+      const holidayDays = employed.filter(r => r.isHoliday && !r.isWeekOff).length;
+      const leaveUsed = money(employed.reduce((s, r) => s + Number(r.leaveFraction ?? 0), 0));
+      const lateMarks = employed.filter(r => r.isLate).length;
       const doubleDeductionLeave = reviews.reduce((s, r) => s + (r.doubleDeductionLeave ? rules.double_deduction_leave_days : 0), 0);
       const penalty = money(reviews.reduce((s, r) => s + Number(r.penaltyAmount ?? 0), 0));
       // Confirmed STWI rule: gross salary strictly greater than ₹12,000 attracts ₹200 P.Tax.
-      const ptax = gross > rules.ptax_threshold ? rules.ptax_amount : 0;
+      // V1.9: P.Tax can be switched off per employee (Employee > Payroll details)
+      const ptax = emp.professionalTaxApplicable && gross > rules.ptax_threshold ? rules.ptax_amount : 0;
 
       const held = await this.deposits.getHeldAmount(emp.id);
       let deposit = await this.prisma.securityDeposit.findFirst({
@@ -1408,6 +1489,7 @@ const totalHoursIdx = findCol(headers, [
         ptax,
         lateMarkThreshold: rules.late_mark_threshold,
         leavePerThreshold: rules.leave_per_threshold,
+        notEmployedDays,
       };
       const calculated = computePayroll(base, {}, securityDeposit, otherDeductions);
       // V1.7: manual Payroll Review edits are re-applied on every recalculation
@@ -1853,18 +1935,19 @@ const totalHoursIdx = findCol(headers, [
         eff.doubleDeductionLeave,
         Number(overrides.totalLeave ?? money(leaveUsed + eff.lateLeaveDeduction)),
         overrides.joinDate ? new Date(overrides.joinDate) : (r.employee.joiningDate ?? ''),
-        overrides.renewalDate ?? '',
+        overrides.renewalDate ? (/^\d{4}-\d{2}-\d{2}/.test(String(overrides.renewalDate)) ? new Date(`${String(overrides.renewalDate).slice(0, 10)}T00:00:00Z`) : overrides.renewalDate) : '',
         Number(overrides.heldSecurityDeposit ?? (heldByEmployee.get(r.employeeId) || 0)),
         overrides.details || (trace ? JSON.stringify(trace) : ''),
       ]);
     }
     this.styleHeader(paySheet, 1);
     for (const cell of ['D','E','F','G','H','I','J','S']) paySheet.getColumn(cell).numFmt = '₹#,##0.00';
-    paySheet.getColumn('Q').numFmt = 'dd-mmm-yyyy';
+    paySheet.getColumn('Q').numFmt = XL_DATE;
+    paySheet.getColumn('R').numFmt = XL_DATE;
 
     const emailSheet = wb.addWorksheet('email summary');
     emailSheet.addRow(['Employee ID','Employee Name','Email','Gross Salary','Payable Amount','Run Month']);
-    for (const r of payroll) emailSheet.addRow([r.employee.employeeCode, r.employee.name, r.employee.email ?? '', Number(r.grossSalary), Number(r.payableAmount), `${run.month}/${run.year}`]);
+    for (const r of payroll) emailSheet.addRow([r.employee.employeeCode, r.employee.name, r.employee.email ?? '', Number(r.grossSalary), Number(r.payableAmount), `${MONTHS[run.month - 1]}/${run.year}`]);
     this.styleHeader(emailSheet, 1);
     emailSheet.getColumn('D').numFmt = '₹#,##0.00'; emailSheet.getColumn('E').numFmt = '₹#,##0.00';
 
@@ -1872,6 +1955,7 @@ const totalHoursIdx = findCol(headers, [
     reviewSheet.addRow(['Status','Type','Employee ID','Employee','Description','Resolution','Penalty','Double Deduction Leave','Created At','Resolved At']);
     for (const r of reviews) reviewSheet.addRow([r.status,r.type,r.employee?.employeeCode ?? '',r.employee?.name ?? '',r.description,r.resolution ?? '',Number(r.penaltyAmount ?? 0),r.doubleDeductionLeave,r.createdAt,r.resolvedAt ?? '']);
     this.styleHeader(reviewSheet, 1);
+    reviewSheet.getColumn(9).numFmt = XL_DATETIME; reviewSheet.getColumn(10).numFmt = XL_DATETIME;
 
     const traceSheet = wb.addWorksheet('Calculation Trace');
     traceSheet.addRow(['Employee ID','Employee','Gross Salary','Daily Salary','Leave Used','Paid Leave','Excess Leave','Late Marks','Late Leave','Double Deduction','Total Deduction Leave','Attendance Deduction','Penalty','P.Tax','Security Deposit','Other Deduction','Payable']);
@@ -1885,10 +1969,11 @@ const totalHoursIdx = findCol(headers, [
     const byEmp = new Map<string, any[]>();
     for (const r of attendance) { const code = r.employee.employeeCode; if (!byEmp.has(code)) byEmp.set(code, []); byEmp.get(code)!.push(r); }
     for (const [code, rows] of byEmp) {
-      const ws = wb.addWorksheet(code.slice(0,31));
-      ws.addRow(['Date','First Check-In','Last Check-Out','Worked Hours','Source Status','Status','Late','Late Minutes','Leave Fraction','Holiday','Week Off']);
-      for (const r of rows) ws.addRow([r.workDate, r.firstCheckIn ?? '', r.lastCheckOut ?? '', r.workedHours == null ? '' : Number(r.workedHours), r.sourceStatus ?? '', r.status, r.isLate, r.lateMinutes, r.leaveFraction == null ? '' : Number(r.leaveFraction), r.isHoliday, r.isWeekOff]);
-      this.styleHeader(ws, 1); ws.getColumn(1).numFmt = 'dd-mm-yyyy';
+      // Excel sheet names cannot contain / \ ? * [ ] : (IDs like 2026/sep/06)
+      const ws = wb.addWorksheet(code.replace(/[\\/?*[\]:]/g, '-').slice(0, 31));
+      ws.addRow(['Date','First Check-In','Last Check-Out','Worked Hours','Source Status','Status','Late','Late Minutes','Leave Fraction','Holiday','Week Off','Check-in Notes','Check-out Notes']);
+      for (const r of rows) ws.addRow([r.workDate, r.firstCheckIn ?? '', r.lastCheckOut ?? '', r.workedHours == null ? '' : Number(r.workedHours), r.sourceStatus ?? '', r.status, r.isLate, r.lateMinutes, r.leaveFraction == null ? '' : Number(r.leaveFraction), r.isHoliday, r.isWeekOff, r.checkInNotes ?? '', r.checkOutNotes ?? '']);
+      this.styleHeader(ws, 1); ws.getColumn(1).numFmt = XL_DATE; ws.getColumn(2).numFmt = XL_TIME; ws.getColumn(3).numFmt = XL_TIME;
     }
     const buffer = await wb.xlsx.writeBuffer();
     return Buffer.from(buffer);

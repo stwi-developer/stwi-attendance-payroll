@@ -4,11 +4,13 @@ import { api, ImportBatch, ImportRow } from '../api';
 import { dialog } from '../ui/dialog';
 import { L } from '../ui/labels';
 import { errMessage } from '../ui/common';
+import { fmtDateTime } from '../ui/date';
+import { busy as blocking } from '../ui/loading';
 import { FormSection, useMasters } from './EmployeeForm';
-import { BANK_FIELDS, checkAll, NOTES_FIELD, PERSONAL_FIELDS, SALARY_FIELDS, showDate, ZOHO_FIELDS } from './fields';
+import { checkAll, NOTES_FIELD, PERSONAL_FIELDS, SALARY_FIELDS, showDate, ZOHO_FIELDS } from './fields';
 
 // V1.9: Zoho "Employee View" import. Yellow values come from the file (read-only here);
-// green fields, salary and bank are filled per employee; then employees are created.
+// green fields and salary are filled per employee; then employees are created.
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   PROBLEM: { label: 'Fix in Zoho', cls: 'bad' },
@@ -30,7 +32,7 @@ const TABS: { key: string; label: string; match: (r: ImportRow) => boolean }[] =
   { key: 'done', label: 'Done', match: (r) => ['CREATED', 'UPDATED', 'SKIPPED', 'UNCHANGED', 'NOT_ACTIVE'].includes(r.status) },
   { key: 'all', label: 'All', match: () => true },
 ];
-const DETAIL_FIELDS = [...PERSONAL_FIELDS, ...SALARY_FIELDS, ...BANK_FIELDS, NOTES_FIELD];
+const DETAIL_FIELDS = [...PERSONAL_FIELDS, ...SALARY_FIELDS, NOTES_FIELD];
 const nameOf = (r: ImportRow) => `${r.zohoJson.values.firstName ?? ''} ${r.zohoJson.values.lastName ?? ''}`.trim() || r.employeeCode;
 
 export function ImportPage() {
@@ -69,7 +71,7 @@ export function ImportPage() {
     if (!file) return;
     setBusy(true);
     try {
-      const b = await api.uploadImport(file);
+      const b = await blocking.run('Reading the Employee View file…', () => api.uploadImport(file));
       setBatch(b); setChecked([]); setTab('todo');
       const s = b.summary;
       await dialog.success(L('imp.uploaded', { total: s.total, file: b.fileName, ready: s.ready, needs: s.needsDetails, problems: s.problems, existing: s.existing }), 'File uploaded');
@@ -100,7 +102,7 @@ export function ImportPage() {
     if (dirty && !(await confirmLeave())) return;
     setBusy(true);
     try {
-      const res = await api.createFromImport(batch.id, ids);
+      const res = await blocking.run('Creating employees…', () => api.createFromImport(batch.id, ids));
       setBatch(res.batch); setChecked([]); setDirty(false);
       const failed = res.failed.length ? `\n\nNot created:\n${res.failed.map((f) => `• ${f.employeeCode}: ${f.message}`).join('\n')}` : '';
       if (res.created.length) await dialog.success(L('imp.created', { count: res.created.length }) + failed);
@@ -130,7 +132,7 @@ export function ImportPage() {
       <ol className="steps">
         <li>In Zoho People open <b>Employees → Employee View</b> and export it as <b>XLS</b>.</li>
         <li>Upload the file here. The yellow Zoho columns are read from the file.</li>
-        <li>For each employee fill the personal details, salary, deposit and bank details, then create them.</li>
+        <li>For each employee fill the personal details, salary and deposit, then create them.</li>
       </ol>
       {fileInput}
       <button className="btn-primary" disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? 'Uploading…' : L('imp.btn.upload')}</button>
@@ -146,7 +148,7 @@ export function ImportPage() {
   return <div className="import-page">
     <div className="page-head">
       <div><button className="btn-secondary" onClick={async () => { if (await confirmLeave()) nav('/employees'); }}>{L('btn.back')}</button><h1>Import from Zoho</h1>
-        <p><b>{batch.fileName}</b> · uploaded {new Date(batch.createdAt).toLocaleString('en-IN')} · {s.total} employees in file</p></div>
+        <p><b>{batch.fileName}</b> · uploaded {fmtDateTime(batch.createdAt)} · {s.total} employees in file</p></div>
       <div className="actions">{fileInput}
         <button className="btn-secondary" disabled={busy} title="Upload the fixed Zoho file. Details already typed are kept." onClick={async () => { if (await confirmLeave()) fileRef.current?.click(); }}>Upload again</button>
         <button className="btn-secondary" onClick={cancelImport}>{L('imp.btn.cancelImport')}</button>
@@ -219,7 +221,6 @@ export function ImportPage() {
       <FormSection title="From Zoho" subtitle="Read from the file. To change these, edit Zoho and upload again." tone="zoho" fields={ZOHO_FIELDS} values={zoho} masters={masters} readOnly />
       <FormSection title="Personal details" subtitle="Pre-filled where Zoho has them" tone="manual" fields={PERSONAL_FIELDS} values={values} errors={errors} onChange={setV} masters={masters} />
       <FormSection title="Salary & security deposit" fields={SALARY_FIELDS} values={values} errors={errors} onChange={setV} masters={masters} />
-      <FormSection title="Bank details" fields={BANK_FIELDS} values={values} errors={errors} onChange={setV} masters={masters} />
       <FormSection title="Other" fields={[NOTES_FIELD]} values={values} errors={errors} onChange={setV} masters={masters} />
       <div className="form-actions sticky">
         {dirty && <span className="muted">Unsaved changes</span>}

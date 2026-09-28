@@ -1,3 +1,5 @@
+import { fmtDate } from '../ui/date';
+
 // V1.9: employee fields, same keys and rules as backend/src/employees/employee-fields.ts.
 // If a field becomes required/optional, change it in BOTH files.
 
@@ -36,12 +38,7 @@ export const SALARY_FIELDS: FieldDef[] = [
   { key: 'professionalTaxApplicable', label: 'Professional Tax applicable', kind: 'bool', required: true, help: '₹200 when gross salary is above ₹12,000.' },
 ];
 
-export const BANK_FIELDS: FieldDef[] = [
-  { key: 'bankAccountName', label: 'Account Holder Name', kind: 'text', required: true },
-  { key: 'bankName', label: 'Bank Name', kind: 'text', required: true },
-  { key: 'bankAccountNumber', label: 'Account Number', kind: 'account', required: true },
-  { key: 'bankIfsc', label: 'IFSC', kind: 'ifsc', required: true, placeholder: 'SBIN0001234' },
-];
+// V1.9: bank details removed (STWI, 28 Sep).
 
 export const NOTES_FIELD: FieldDef = { key: 'notes', label: 'Notes', kind: 'longtext', required: false };
 
@@ -76,7 +73,8 @@ export function checkAll(fields: FieldDef[], values: Record<string, any>) {
 }
 
 export const isoDay = (v?: string | null) => (v ? String(v).slice(0, 10) : '');
-export const showDate = (v?: string | null) => (v ? new Date(`${isoDay(v)}T00:00:00Z`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '—');
+/** V1.9: STWI format 21/Aug/2026 */
+export const showDate = (v?: string | null) => fmtDate(v ? isoDay(v) : null);
 /** Today's date on this computer (India time), as YYYY-MM-DD. */
 export const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 /** 1st of next month, the usual date for a salary change. */

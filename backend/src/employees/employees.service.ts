@@ -22,6 +22,9 @@ const PERSONAL_FIELDS = ['dateOfBirth', 'gender', 'maritalStatus', 'personalMobi
 
 const dateOrNull = (iso: string | null | undefined) => (iso ? new Date(`${iso}T00:00:00.000Z`) : null);
 const isoOf = (d: Date | null | undefined) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** V1.9: STWI date format, e.g. 21/Aug/2026 */
+const stwiDate = (d: Date | null | undefined) => { if (!d) return ''; const x = new Date(d); return `${String(x.getUTCDate()).padStart(2, '0')}/${MONTHS[x.getUTCMonth()]}/${x.getUTCFullYear()}`; };
 
 export class FieldErrors extends BadRequestException {
   constructor(public readonly fieldErrors: Record<string, string>) {
@@ -284,29 +287,30 @@ export class EmployeesService {
       const v: any = (emp as any)[k];
       if (k === 'department') return emp.department?.name ?? '';
       if (k === 'designation') return emp.designation?.name ?? '';
-      if (v instanceof Date) return isoOf(v);
+      if (v instanceof Date) return stwiDate(v);
       if (typeof v === 'boolean') return v ? 'Yes' : 'No';
       return v ?? '';
     };
     for (const f of [...ZOHO_FIELDS, ...MANUAL_FIELDS]) profile.addRow([f.label, value(f.key)]);
     for (const f of PAYROLL_FIELDS.filter((x) => !['grossSalary', 'salaryEffectiveFrom', 'securityDepositAlreadyTaken'].includes(x.key))) profile.addRow([f.label, value(f.key)]);
     profile.addRow(['Status', emp.status]);
-    profile.addRow(['Date of Exit', isoOf(emp.dateOfExit)]);
+    profile.addRow(['Date of Exit', stwiDate(emp.dateOfExit)]);
     profile.addRow(['Current Gross Salary', Number(emp.salaryHistory[0]?.grossSalary ?? 0)]);
     profile.addRow(['Security Deposit Held', emp.depositHeld]);
-    profile.addRow(['Exported on', new Date().toISOString().slice(0, 19).replace('T', ' ')]);
+    const nowIst = new Date(Date.now() + 330 * 60000);
+    profile.addRow(['Exported on', `${stwiDate(nowIst)}, ${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}`]);
     head(profile);
 
     const sal = wb.addWorksheet('Salary History');
     sal.columns = [{ header: 'Effective From', width: 16 }, { header: 'Gross Salary', width: 16 }, { header: 'Notes', width: 60 }];
-    for (const s of [...emp.salaryHistory].reverse()) sal.addRow([isoOf(s.effectiveFrom), Number(s.grossSalary), s.notes ?? '']);
+    for (const s of [...emp.salaryHistory].reverse()) sal.addRow([stwiDate(s.effectiveFrom), Number(s.grossSalary), s.notes ?? '']);
     head(sal);
 
     const dep = wb.addWorksheet('Security Deposit');
     dep.columns = [{ header: 'Date', width: 14 }, { header: 'Type', width: 26 }, { header: 'Amount', width: 14 }, { header: 'Required', width: 14 }, { header: 'Held before', width: 14 }, { header: 'Method', width: 14 }, { header: 'Status', width: 12 }];
     for (const d of [...emp.deposits].reverse()) {
-      dep.addRow([isoOf(d.createdAt), d.triggerReason, Number(d.additionalRequired), Number(d.requiredDeposit), Number(d.alreadyHeld), d.method, d.status]);
-      for (const t of d.transactions) dep.addRow([isoOf(t.transactionDate), `  Installment ${t.installmentNumber}${t.note ? ` (${t.note})` : ''}`, Number(t.amount), '', '', '', '']);
+      dep.addRow([stwiDate(d.createdAt), d.triggerReason, Number(d.additionalRequired), Number(d.requiredDeposit), Number(d.alreadyHeld), d.method, d.status]);
+      for (const t of d.transactions) dep.addRow([stwiDate(t.transactionDate), `  Installment ${t.installmentNumber}${t.note ? ` (${t.note})` : ''}`, Number(t.amount), '', '', '', '']);
     }
     head(dep);
 
@@ -322,8 +326,8 @@ export class EmployeesService {
 
     const att = await this.prisma.attendanceRecord.findMany({ where: { employeeId: id }, orderBy: { workDate: 'asc' } });
     const aws = wb.addWorksheet('Attendance');
-    aws.columns = ['Date', 'Zoho Status', 'System Status', 'First Check-in', 'Hours', 'Late', 'Late (min)', 'Leave'].map((h) => ({ header: h, width: 16 }));
-    for (const a of att) aws.addRow([isoOf(a.workDate), a.sourceStatus ?? '', a.status, a.firstCheckIn ? new Date(a.firstCheckIn).toISOString().slice(11, 16) : '', a.workedHours == null ? '' : Number(a.workedHours), a.isLate ? 'Yes' : 'No', a.lateMinutes ?? '', Number(a.leaveFraction ?? 0)]);
+    aws.columns = ['Date', 'Zoho Status', 'System Status', 'First Check-in', 'Last Check-out', 'Hours', 'Late', 'Late (min)', 'Leave', 'Check-in Notes', 'Check-out Notes'].map((h) => ({ header: h, width: 16 }));
+    for (const a of att) aws.addRow([stwiDate(a.workDate), a.sourceStatus ?? '', a.status, a.firstCheckIn ? new Date(a.firstCheckIn).toISOString().slice(11, 16) : '', a.lastCheckOut ? new Date(a.lastCheckOut).toISOString().slice(11, 16) : '', a.workedHours == null ? '' : Number(a.workedHours), a.isLate ? 'Yes' : 'No', a.lateMinutes ?? '', Number(a.leaveFraction ?? 0), a.checkInNotes ?? '', a.checkOutNotes ?? '']);
     head(aws);
 
     await this.audit.log({ userId, action: 'EXPORT', entityType: 'Employee', entityId: id, employeeId: id });

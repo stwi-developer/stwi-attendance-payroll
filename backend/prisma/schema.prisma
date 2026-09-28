@@ -228,6 +228,9 @@ model AttendanceRecord {
   isHoliday        Boolean          @default(false)
   isWeekOff        Boolean          @default(false)
   manualNotes      String?          @db.Text
+  // V1.9: Zoho "Check-in Notes" / "Check-out Notes"
+  checkInNotes     String?          @db.Text
+  checkOutNotes    String?          @db.Text
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 

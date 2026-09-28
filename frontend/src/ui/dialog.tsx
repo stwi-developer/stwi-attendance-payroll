@@ -9,6 +9,8 @@
 // <DialogHost/> is mounted once in App and shows the popups one at a time.
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { L } from './labels';
+import { DateInput } from './DateInput';
+import { fmtText } from './date';
 
 export type Tone = 'info' | 'success' | 'warning' | 'error' | 'danger';
 export type FieldOption = { value: string; label: string };
@@ -146,7 +148,7 @@ function DialogCard({ spec, onDone }: { spec: Pending; onDone: (r: Result) => vo
           <h3 id={`dlg-${spec.id}`}>{spec.title}</h3>
         </div>
         <form className="modal-body" onSubmit={(e) => { e.preventDefault(); const s = spec.buttons.find((b) => b.submit); if (s) click(s); }}>
-          {spec.message !== undefined && spec.message !== '' && <div className="modal-message">{spec.message}</div>}
+          {spec.message !== undefined && spec.message !== '' && <div className="modal-message">{typeof spec.message === 'string' ? fmtText(spec.message) : spec.message}</div>}
           {spec.fields?.map((f) => (
             <div className="modal-field" key={f.name}>
               {f.type === 'checkbox' ? (
@@ -162,6 +164,7 @@ function DialogCard({ spec, onDone }: { spec: Pending; onDone: (r: Result) => vo
                   ) : f.type === 'textarea' ? (
                     <textarea rows={3} value={values[f.name]} placeholder={f.placeholder} onChange={(e) => set(f.name, e.target.value)} />
                   ) : (
+                    f.type === 'date' ? <DateInput value={values[f.name]} onChange={(v) => set(f.name, v)} /> :
                     <input type={f.type} value={values[f.name]} min={f.min} max={f.max} step={f.step ?? (f.type === 'number' ? 'any' : undefined)} placeholder={f.placeholder} onChange={(e) => set(f.name, e.target.value)} />
                   )}
                 </label>

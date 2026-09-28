@@ -6,7 +6,7 @@ Branch: `feature/v1.9-employee-creation` (based on `main` @ 462ab8b, V1.7 + V1.8
 - **Fields = the coloured columns of the Zoho "Employee View" export.**
   - Yellow (from Zoho): Employee ID, First/Last Name, Email, Department, Designation, Employment Type, Date of Joining, Total Experience, Date of Birth, Gender, Marital Status.
   - Green (typed in the app): Personal Mobile, Personal Email, Aadhaar, PAN, Permanent Address. Date of Exit is set with the Deactivate button.
-  - Also typed in the app: Gross Salary, Salary Effective From, Security Deposit Already Taken, Professional Tax on/off, bank details (holder, bank, account no., IFSC), Notes.
+  - Also typed in the app: Gross Salary, Salary Effective From, Security Deposit Already Taken, Professional Tax on/off, Notes.
   - Every field is required except Total Experience (Zoho leaves it empty for new joiners), Notes and Date of Exit.
   - Formats checked: email, 12-digit Aadhaar, PAN `ABCDE1234F`, IFSC `SBIN0001234`, 10+ digit mobile.
   - The rules live in one place per side: `backend/src/employees/employee-fields.ts` and `frontend/src/employees/fields.ts`.
@@ -59,6 +59,37 @@ Branch: `feature/v1.9-employee-creation` (based on `main` @ 462ab8b, V1.7 + V1.8
 - `Department.parentId`.
 - New tables, all created as **InnoDB**: `EmploymentType`, `EmployeeImportBatch`, `EmployeeImportRow`, `AppLabel`.
 - Existing employees keep their data. Their name is split into first and last name.
+
+## 6. V1.9 part 2 (28 Sep, afternoon)
+- **Date format dd/Mmm/yyyy everywhere** (e.g. `21/Aug/2026`; date + time `28/Sep/2026, 12:49 pm`).
+  - Every date the app shows is in this format, including dates inside messages and Manual Review texts.
+  - Every date box is the new STWI date box (`frontend/src/ui/DateInput.tsx`). You can type `21/aug/2026`, `21/08/2026` or `21-8-2026`, or pick from a calendar. A wrong date turns the box red.
+  - Excel exports use the same format: Payment Sheet Join Date and Renewal Date, employee sheets (with times as `09:30 AM`), and the employee information export.
+- **Loaders**:
+  - A thin yellow bar at the top while any data loads or saves.
+  - Lists show "Loading…".
+  - Long jobs show a "Please wait…" window that blocks double clicks: upload, process, calculate, export, finalize/reopen, Zoho import, create, export and delete employee.
+  - Sign in shows "Signing in…".
+- **Dashboard**: the four cards open Employees, Monthly Run, Manual Review and Payroll. **Payroll Results = number of finalized months.**
+- **Login**: eye icon to show or hide the password.
+- **Lunch rule (STWI half-day leave)**:
+  - Lunch 12:30–13:30 is compulsory. On an "STWI Leave" half day, the lunch hour inside check-in to check-out is taken off, unless the Zoho **check-out note** says no lunch was taken ("no lunch taken", "lunch not taken", "lunch skipped", "without lunch").
+  - At least **4:00** is needed. Otherwise the day goes to Manual Review, and the review shows the times and the notes.
+  - Examples:
+    - 09:28–13:36 with the "No lunch taken" note → OK.
+    - The same without the note → 3:08 → review.
+    - 09:30–14:30 → 4:00 → OK.
+    - 09:33–14:20 → 3:47 → review.
+  - Other statuses (Present, "0.5 day Present, 0.5 day Absent", …) are unchanged.
+- **Attendance table**:
+  - Zoho columns: Date, Employee, Check-in, Check-out, Total Hours as `08:18`, Status, **Check-in Notes, Check-out Notes**, then Late, Leave and Actions.
+  - Excel-style grid lines, a row number column (#), row colours like the Excel sheet, and a header that stays visible while scrolling.
+- **Database**: migration `20260928160000_v1_9_attendance_notes` adds `checkInNotes` and `checkOutNotes` to `AttendanceRecord`. Render applies it on deploy. **Upload a month's files again to fill the notes for months imported earlier.**
+- **Fix**: exporting a month that has an employee ID with "/" (e.g. `2026/sep/06`) failed, because Excel sheet names cannot contain "/". The sheet is now named `2026-sep-06`.
+- **Test cases**: `docs/test-data/v1.9/STWI_V1.9_Test_Cases.xlsx` now has 96 cases.
+
+- **Bank details removed** (STWI, 28 Sep): no bank section in Add Employee, the employee page or the Zoho import, and bank details are no longer required. The old database columns stay but are unused. The employee page section is now "Payroll" (P.Tax on/off).
+- **If `npm run start:dev` shows `Property 'checkInNotes' does not exist`**, the Prisma client is older than the database change. Stop the backend, then run `npx prisma migrate deploy` and `npx prisma generate`, and start it again.
 
 ## 5. Release steps (in this order)
 1. **Backup**: phpMyAdmin → `softtec1_attendance_payroll` → Export.

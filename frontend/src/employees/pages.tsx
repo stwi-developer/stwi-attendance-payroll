@@ -4,8 +4,10 @@ import { api, ApiError, Employee, ImportBatch, Page, User } from '../api';
 import { dialog, Modal } from '../ui/dialog';
 import { L } from '../ui/labels';
 import { currency, errMessage, PageSize, PaginationControls } from '../ui/common';
+import { DateInput } from '../ui/DateInput';
+import { busy as blocking, LoadingBlock } from '../ui/loading';
 import { FormSection, useMasters } from './EmployeeForm';
-import { BANK_FIELDS, checkAll, firstOfNextMonth, isoDay, localToday, NOTES_FIELD, PERSONAL_FIELDS, SALARY_FIELDS, showDate, ZOHO_FIELDS } from './fields';
+import { checkAll, firstOfNextMonth, isoDay, localToday, NOTES_FIELD, PERSONAL_FIELDS, SALARY_FIELDS, showDate, ZOHO_FIELDS } from './fields';
 
 const statusBadge = (s: string) => <span className={`badge ${s === 'ACTIVE' ? 'ok' : 'muted'}`}>{s === 'ACTIVE' ? 'Active' : 'Inactive'}</span>;
 
@@ -44,7 +46,7 @@ export function EmployeesList() {
         <input placeholder="Max salary" type="number" value={filters.maxSalary} onChange={(e) => sf('maxSalary', e.target.value)} />
         <button className="btn-secondary" onClick={() => { setFilters(empty); setPage(1); }}>{L('btn.clear')}</button>
       </div>
-      {result?.data.length ? <div className="table-scroll"><table><thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Type</th><th>Joined</th><th>Salary</th><th>Status</th><th></th></tr></thead><tbody>
+      {result === undefined ? <LoadingBlock /> : result?.data.length ? <div className="table-scroll"><table><thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Type</th><th>Joined</th><th>Salary</th><th>Status</th><th></th></tr></thead><tbody>
         {result.data.map((e) => <tr key={e.id} className="clickable" onClick={() => nav(`/employees/${e.id}`)}>
           <td>{e.employeeCode}</td><td><b>{e.name}</b><br /><small>{e.email || ''}</small></td><td>{e.department?.name || '—'}</td><td>{e.designation?.name || '—'}</td><td>{e.employmentType || '—'}</td>
           <td>{showDate(e.joiningDate)}</td><td>{currency(e.salaryHistory[0]?.grossSalary)}</td><td>{statusBadge(e.status)}{e.dateOfExit ? <small> exit {showDate(e.dateOfExit)}</small> : null}</td>
@@ -63,7 +65,7 @@ export function EmployeeNew() {
   const [values, setValues] = useState<Record<string, any>>({ professionalTaxApplicable: true, securityDepositAlreadyTaken: '0' });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const all = [...ZOHO_FIELDS, ...PERSONAL_FIELDS, ...SALARY_FIELDS, ...BANK_FIELDS, NOTES_FIELD];
+  const all = [...ZOHO_FIELDS, ...PERSONAL_FIELDS, ...SALARY_FIELDS, NOTES_FIELD];
   const set = (k: string, v: any) => {
     setErrors((e) => { const n = { ...e }; delete n[k]; return n; });
     setValues((s) => ({ ...s, [k]: v, ...(k === 'joiningDate' && (!s.salaryEffectiveFrom || s.salaryEffectiveFrom === s.joiningDate) ? { salaryEffectiveFrom: v } : {}) }));
@@ -75,7 +77,7 @@ export function EmployeeNew() {
     if (Object.keys(errs).length) { await dialog.error(`Please fix ${Object.keys(errs).length} field(s) marked in red.`, 'Some details are missing'); return; }
     setBusy(true);
     try {
-      const emp = await api.createEmployee(values);
+      const emp = await blocking.run('Creating the employee…', () => api.createEmployee(values));
       await dialog.success(L('emp.created', { name: emp.name, code: emp.employeeCode }));
       nav(`/employees/${emp.id}`);
     } catch (e) {
@@ -89,7 +91,6 @@ export function EmployeeNew() {
       <FormSection title="Zoho details" subtitle="Yellow columns of the Zoho Employee View" tone="zoho" fields={ZOHO_FIELDS} values={values} errors={errors} onChange={set} masters={masters} />
       <FormSection title="Personal details" subtitle="Green columns" tone="manual" fields={PERSONAL_FIELDS} values={values} errors={errors} onChange={set} masters={masters} />
       <FormSection title="Salary & security deposit" fields={SALARY_FIELDS} values={values} errors={errors} onChange={set} masters={masters} />
-      <FormSection title="Bank details" fields={BANK_FIELDS} values={values} errors={errors} onChange={set} masters={masters} />
       <FormSection title="Other" fields={[NOTES_FIELD]} values={values} errors={errors} onChange={set} masters={masters} />
       <div className="form-actions"><button className="btn-secondary" onClick={() => nav('/employees')}>{L('btn.cancel')}</button><button className="btn-primary" disabled={busy} onClick={submit}>{L('emp.btn.create')}</button></div>
     </div>
@@ -97,7 +98,7 @@ export function EmployeeNew() {
 }
 
 // ============================================================ detail
-const EDIT_FIELDS = [...ZOHO_FIELDS.filter((f) => f.key !== 'employeeCode'), ...PERSONAL_FIELDS, SALARY_FIELDS.find((f) => f.key === 'professionalTaxApplicable')!, ...BANK_FIELDS, NOTES_FIELD];
+const EDIT_FIELDS = [...ZOHO_FIELDS.filter((f) => f.key !== 'employeeCode'), ...PERSONAL_FIELDS, SALARY_FIELDS.find((f) => f.key === 'professionalTaxApplicable')!, NOTES_FIELD];
 
 function toForm(e: Employee) {
   const v: Record<string, any> = {};
@@ -200,7 +201,7 @@ export function EmployeeDetail({ user }: { user: User }) {
         : <button onClick={() => setEditing(true)}>{L('btn.edit')}</button>)}</div>
       <FormSection title="Zoho details" tone="zoho" fields={ZOHO_FIELDS} values={{ ...values, employeeCode: emp.employeeCode }} errors={errors} onChange={set} masters={masters} readOnly={!editing} readOnlyKeys={['employeeCode']} />
       <FormSection title="Personal details" tone="manual" fields={PERSONAL_FIELDS} values={values} errors={errors} onChange={set} masters={masters} readOnly={!editing} />
-      <FormSection title="Bank & payroll" fields={[...BANK_FIELDS, SALARY_FIELDS.find((f) => f.key === 'professionalTaxApplicable')!]} values={values} errors={errors} onChange={set} masters={masters} readOnly={!editing} />
+      <FormSection title="Payroll" fields={[SALARY_FIELDS.find((f) => f.key === 'professionalTaxApplicable')!]} values={values} errors={errors} onChange={set} masters={masters} readOnly={!editing} />
       <FormSection title="Other" fields={[NOTES_FIELD]} values={values} errors={errors} onChange={set} masters={masters} readOnly={!editing} />
     </div>
     <div className="detail-grid" style={{ marginTop: 18 }}>
@@ -209,7 +210,7 @@ export function EmployeeDetail({ user }: { user: User }) {
         <p className="muted">Adds a new salary row. Any extra security deposit is collected in that month's payroll (Full or EMI).</p>
         <div className="form-grid two">
           <label>New Gross Salary (₹)<input type="number" min="0" value={salary.grossSalary} onChange={(e) => setSalary({ ...salary, grossSalary: e.target.value })} /></label>
-          <label>Effective From<input type="date" value={salary.effectiveFrom} onChange={(e) => setSalary({ ...salary, effectiveFrom: e.target.value })} /></label>
+          <label>Effective From<DateInput value={salary.effectiveFrom} onChange={(v) => setSalary({ ...salary, effectiveFrom: v })} /></label>
           <label className="wide">Reason / note<input value={salary.notes} placeholder="e.g. Annual increment" onChange={(e) => setSalary({ ...salary, notes: e.target.value })} /></label>
         </div>
         {canEdit && <div className="form-actions"><button className="btn-primary" onClick={addSalary}>{L('emp.btn.saveSalary')}</button></div>}
@@ -231,11 +232,11 @@ function DangerZone({ emp, onClose, onDeleted }: { emp: Employee; onClose: () =>
   const [exported, setExported] = useState('');
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
-  const doExport = async () => { try { setBusy(true); setExported(await api.exportEmployee(emp.id)); } catch (e) { await dialog.error(errMessage(e)); } finally { setBusy(false); } };
+  const doExport = async () => { try { setBusy(true); setExported(await blocking.run('Preparing the employee file…', () => api.exportEmployee(emp.id))); } catch (e) { await dialog.error(errMessage(e)); } finally { setBusy(false); } };
   const doDelete = async () => {
     try {
       setBusy(true);
-      await api.deleteEmployee(emp.id, typed.trim());
+      await blocking.run('Deleting the employee…', () => api.deleteEmployee(emp.id, typed.trim()));
       onClose();
       await dialog.success(L('emp.deleted', { name: emp.name }));
       onDeleted();

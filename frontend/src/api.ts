@@ -1,6 +1,17 @@
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
+// V1.9: count running requests so the app can show a loading bar (ui/loading.tsx)
+let inflight = 0;
+const loadingListeners = new Set<(n: number) => void>();
+export function onLoadingChange(fn: (n: number) => void) { loadingListeners.add(fn); return () => { loadingListeners.delete(fn); }; }
+function track(delta: number) { inflight = Math.max(0, inflight + delta); loadingListeners.forEach((f) => f(inflight)); }
+async function tracked<T>(work: () => Promise<T>): Promise<T> { track(1); try { return await work(); } finally { track(-1); } }
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  return tracked(() => requestRaw<T>(path, options));
+}
+
+async function requestRaw<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('accessToken');
   const headers = new Headers(options.headers);
   if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
@@ -20,7 +31,8 @@ export class ApiError extends Error {
   constructor(message: string, public fieldErrors?: Record<string, string>) { super(message); }
 }
 
-async function download(path: string, fallbackName: string) {
+async function download(path: string, fallbackName: string) { return tracked(() => downloadRaw(path, fallbackName)); }
+async function downloadRaw(path: string, fallbackName: string) {
   const token = localStorage.getItem('accessToken');
   const res = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
@@ -64,7 +76,7 @@ export type Run = { id:string; year:number; month:number; status:string; created
 export type AttendanceFile = { id:string; originalName:string; employeeCode?:string|null; status:string; uploadedAt:string; errorMessage?:string|null };
 export type PayrollResult = { id:string; employeeId:string; employee:Employee; grossSalary:string|number; calendarDays:number; weekOffDays:string|number; holidayDays:string|number; paidLeaveAllowance:string|number; stwiLeaveDays:string|number; lateMarks:number; lateLeaveDeduction:string|number; excessLeaveDeduction:string|number; doubleDeductionLeave:string|number; penalty:string|number; securityDeposit:string|number; ptax:string|number; otherDeductions:string|number; payableAmount:string|number; workingDays?:number; dailySalary?:number; leaveDeductionAmount?:number; halfDayCount?:number; totalLeave?:number; heldSecurityDeposit?:number; renewalDate?:string|null; deductionLeave?:number; manuallyEdited?:boolean; ruleSnapshot?:any };
 export type Review = { id:string; employee?:Employee|null; type:string; status:string; description:string; resolution?:string|null; penaltyAmount?:string|number|null; doubleDeductionLeave:boolean; createdAt:string; resolvedAt?:string|null };
-export type AttendanceRecord = { id:string; employee:Employee; employeeId:string; workDate:string; firstCheckIn?:string|null; lastCheckOut?:string|null; workedHours?:string|number|null; sourceStatus?:string|null; status:string; isLate:boolean; lateMinutes:number; leaveFraction?:string|number|null; isHoliday:boolean; isWeekOff:boolean; manualNotes?:string|null; leaveEvent?:any };
+export type AttendanceRecord = { id:string; employee:Employee; employeeId:string; workDate:string; firstCheckIn?:string|null; lastCheckOut?:string|null; workedHours?:string|number|null; sourceStatus?:string|null; status:string; isLate:boolean; lateMinutes:number; leaveFraction?:string|number|null; isHoliday:boolean; isWeekOff:boolean; manualNotes?:string|null; checkInNotes?:string|null; checkOutNotes?:string|null; leaveEvent?:any };
 
 export const api = {
   login:(email:string,password:string)=>request<{accessToken:string;user:User}>('/auth/login',{method:'POST',body:JSON.stringify({email,password})}),
@@ -125,12 +137,7 @@ export const api = {
   setOtherDeduction:(runId:string,employeeId:string,amount:number)=>request<any>(`/runs/${runId}/payroll/${employeeId}/other-deduction`,{method:'PATCH',body:JSON.stringify({amount})}),
   finalizeRun:(id:string)=>request<Run>(`/runs/${id}/finalize`,{method:'POST'}),
   reopenRun:(id:string)=>request<Run>(`/runs/${id}/reopen`,{method:'POST'}),
-  exportRun: async (id:string)=>{
-    const token=localStorage.getItem('accessToken');
-    const res=await fetch(`${API_URL}/runs/${id}/export`,{headers:{Authorization:`Bearer ${token}`}});
-    if(!res.ok){const type=res.headers.get('content-type')||'';const data=type.includes('application/json')?await res.json():await res.text();throw new Error(typeof data==='string'?data:data?.message||'Export failed');}
-    const blob=await res.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`STWI_Attendance_Payroll_${id}.xlsx`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
-  },
+  exportRun: (id:string)=>download(`/runs/${id}/export`,`STWI_Attendance_Payroll_${id}.xlsx`),
   resetDepositMethod: (
   runId: string,
   employeeId: string,

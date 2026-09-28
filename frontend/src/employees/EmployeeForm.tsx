@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { dialog } from '../ui/dialog';
+import { DateInput } from '../ui/DateInput';
 import { FieldDef, isoDay, showDate } from './fields';
 
 export type Masters = { departments: any[]; designations: any[]; employmentTypes: any[]; reload: () => Promise<void> };
@@ -52,7 +53,7 @@ function FieldInput({ f, value, onChange, masters, disabled }: { f: FieldDef; va
     case 'longtext':
       return <textarea disabled={disabled} rows={2} value={value ?? ''} placeholder={f.placeholder} onChange={(e) => onChange(e.target.value)} />;
     case 'date':
-      return <input disabled={disabled} type="date" value={isoDay(value)} onChange={(e) => onChange(e.target.value)} />;
+      return <DateInput disabled={disabled} value={isoDay(value)} onChange={onChange} />;
     case 'money':
       return <input disabled={disabled} type="number" min="0" step="0.01" value={value ?? ''} placeholder={f.placeholder} onChange={(e) => onChange(e.target.value)} />;
     case 'email':

@@ -45,16 +45,13 @@ export const MANUAL_FIELDS: EmployeeFieldDef[] = [
   { key: 'pan', label: 'PAN', source: 'manual', kind: 'pan', required: true, zohoHeader: 'PAN' },
 ];
 
-// Payroll + bank details (always typed in the app, never from Excel)
+// Payroll details (always typed in the app, never from Excel).
+// V1.9: bank details removed from the employee (STWI, 28 Sep); the old DB columns stay unused.
 export const PAYROLL_FIELDS: EmployeeFieldDef[] = [
   { key: 'grossSalary', label: 'Gross Salary (₹ per month)', source: 'manual', kind: 'money', required: true },
   { key: 'salaryEffectiveFrom', label: 'Salary Effective From', source: 'manual', kind: 'date', required: true },
   { key: 'securityDepositAlreadyTaken', label: 'Security Deposit Already Taken (₹)', source: 'manual', kind: 'money', required: true },
   { key: 'professionalTaxApplicable', label: 'Professional Tax applicable', source: 'manual', kind: 'bool', required: true },
-  { key: 'bankAccountName', label: 'Account Holder Name', source: 'manual', kind: 'text', required: true },
-  { key: 'bankName', label: 'Bank Name', source: 'manual', kind: 'text', required: true },
-  { key: 'bankAccountNumber', label: 'Account Number', source: 'manual', kind: 'account', required: true },
-  { key: 'bankIfsc', label: 'IFSC', source: 'manual', kind: 'ifsc', required: true },
   { key: 'notes', label: 'Notes', source: 'manual', kind: 'longtext', required: false },
 ];
 

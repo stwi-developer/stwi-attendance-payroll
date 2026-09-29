@@ -91,6 +91,9 @@ Branch: `feature/v1.9-employee-creation` (based on `main` @ 462ab8b, V1.7 + V1.8
 - **Bank details removed** (STWI, 28 Sep): no bank section in Add Employee, the employee page or the Zoho import, and bank details are no longer required. The old database columns stay but are unused. The employee page section is now "Payroll" (P.Tax on/off).
 - **If `npm run start:dev` shows `Property 'checkInNotes' does not exist`**, the Prisma client is older than the database change. Stop the backend, then run `npx prisma migrate deploy` and `npx prisma generate`, and start it again.
 
+- **Fix (29 Sep)**: "Export Employee Information" gave *Internal server error* on the hosted app. Cause: payroll rows of deleted months left behind because the hosting tables are MyISAM (no foreign keys). The export now skips such rows. Run `docs/sql/2026-09-29_hosted_repair_innodb.sql` once in phpMyAdmin, after a backup. It removes the orphan rows, converts every table to InnoDB and adds the 24 foreign keys, and it is safe to run again.
+- **Fix (29 Sep)**: after Upload, the "Upload result" popup and the "Uploading…" window blocked each other. The result popup now opens after the wait window closes, and popups always sit above the wait window.
+
 ## 5. Release steps (in this order)
 1. **Backup**: phpMyAdmin → `softtec1_attendance_payroll` → Export.
 2. **Database**: nothing to run by hand. The Render build command is `npm ci && npx prisma generate && npx prisma migrate deploy && npm run build`, so Render applies the V1.9 migration itself on deploy. `docs/sql/2026-09-28_v1.9_live_db.sql` is only a fallback if that command is ever changed.

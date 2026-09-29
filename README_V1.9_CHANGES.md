@@ -94,6 +94,10 @@ Branch: `feature/v1.9-employee-creation` (based on `main` @ 462ab8b, V1.7 + V1.8
 - **Fix (29 Sep)**: "Export Employee Information" gave *Internal server error* on the hosted app. Cause: payroll rows of deleted months left behind because the hosting tables are MyISAM (no foreign keys). The export now skips such rows. Run `docs/sql/2026-09-29_hosted_repair_innodb.sql` once in phpMyAdmin, after a backup. It removes the orphan rows, converts every table to InnoDB and adds the 24 foreign keys, and it is safe to run again.
 - **Fix (29 Sep)**: after Upload, the "Upload result" popup and the "Uploading…" window blocked each other. The result popup now opens after the wait window closes, and popups always sit above the wait window.
 
+- **Fix (29 Sep): MISMATCH for new IDs.** Zoho names the file `Attendance_entries_2026_sep_06_Aryan.xls`, with "_" where the ID has "/". The app read the ID from the name as "2026", which didn't match the sheet's "2026/sep/06". It now reads `2026_sep_06` as `2026/sep/06`. Delete the MISMATCH file row in the run and upload the file again.
+- **ZIP upload** (already supported): choose one `.zip` holding every employee's Zoho file in the run's Upload box. Each `.xls`/`.xlsx` inside is handled as its own file, and files already uploaded show DUPLICATE.
+- **"0.5 day Present, 0.5 day Absent / Regularized" = whole working day** whatever the hours (under 8:00 or 4:00): present, no leave, no Manual Review. It is now matched loosely (spacing, "Regularised"). Without "Regularized", the half-day review stays.
+
 ## 5. Release steps (in this order)
 1. **Backup**: phpMyAdmin → `softtec1_attendance_payroll` → Export.
 2. **Database**: nothing to run by hand. The Render build command is `npm ci && npx prisma generate && npx prisma migrate deploy && npm run build`, so Render applies the V1.9 migration itself on deploy. `docs/sql/2026-09-28_v1.9_live_db.sql` is only a fallback if that command is ever changed.

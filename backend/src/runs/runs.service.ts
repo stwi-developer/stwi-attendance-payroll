@@ -92,10 +92,10 @@ function getShortHoursStatusAction(
 ): 'MANUAL_REVIEW' | 'REGULARIZED_PRESENT' | 'NONE' {
   const normalized = normalizeAttendanceStatus(status);
 
-  if (
-    normalized ===
-    '0.5 day present, 0.5 day absent / regularized'
-  ) {
+  // STWI (29 Sep): "0.5 day Present, 0.5 day Absent / Regularized" counts as a
+  // whole working day whatever the hours (short of 8:00 or 4:00): present, no
+  // leave, no review. Matched loosely so small Zoho wording changes still work.
+  if (/0\.5\s*day\s*present/.test(normalized) && /regulari[sz]ed/.test(normalized)) {
     return 'REGULARIZED_PRESENT';
   }
 
@@ -184,7 +184,12 @@ function sourceTimeMinutes(value: any) {
 }
 
 function parseFilename(name: string) {
-  const m = name.match(/Attendance_entries_([^_]+)_/i);
+  const base = name.replace(/\.[^.]+$/, '');
+  // V1.9: Zoho writes the ID yyyy/mmm/code with "_" in the file name,
+  // e.g. Attendance_entries_2026_sep_06_Aryan.xls -> 2026/sep/06
+  const dated = base.match(/Attendance_entries_(\d{4})[_-]([A-Za-z]{3})[_-]([A-Za-z0-9]+)(?:[_-]|$)/i);
+  if (dated) return `${dated[1]}/${dated[2]}/${dated[3]}`;
+  const m = base.match(/Attendance_entries_([^_]+)(?:_|$)/i);
   return m?.[1] ?? null;
 }
 function leaveClassification(status: string, hours: number | null, minHalf: number, maxHalf: number) {

@@ -314,7 +314,12 @@ export class EmployeesService {
     }
     head(dep);
 
-    const payrolls = await this.prisma.payrollResult.findMany({ where: { employeeId: id }, include: { payrollRun: true } });
+    // Rows of deleted months can still exist on the hosting DB (MyISAM tables ignore
+    // foreign keys), so runs are read separately and orphan rows are skipped.
+    const runs = new Map((await this.prisma.payrollRun.findMany()).map((r) => [r.id, r]));
+    const payrolls = (await this.prisma.payrollResult.findMany({ where: { employeeId: id } }))
+      .filter((p) => runs.has(p.payrollRunId))
+      .map((p) => ({ ...p, payrollRun: runs.get(p.payrollRunId)! }));
     payrolls.sort((a, b) => a.payrollRun.year - b.payrollRun.year || a.payrollRun.month - b.payrollRun.month);
     const pay = wb.addWorksheet('Payroll');
     pay.columns = ['Month', 'Run Status', 'Gross', 'Leave Days', 'Late Marks', 'Deduction Leave', 'Penalty', 'Security Deposit', 'P.Tax', 'Other Deductions', 'Payable'].map((h) => ({ header: h, width: 15 }));
@@ -324,7 +329,7 @@ export class EmployeesService {
     }
     head(pay);
 
-    const att = await this.prisma.attendanceRecord.findMany({ where: { employeeId: id }, orderBy: { workDate: 'asc' } });
+    const att = await this.prisma.attendanceRecord.findMany({ where: { employeeId: id, payrollRunId: { in: [...runs.keys()] } }, orderBy: { workDate: 'asc' } });
     const aws = wb.addWorksheet('Attendance');
     aws.columns = ['Date', 'Zoho Status', 'System Status', 'First Check-in', 'Last Check-out', 'Hours', 'Late', 'Late (min)', 'Leave', 'Check-in Notes', 'Check-out Notes'].map((h) => ({ header: h, width: 16 }));
     for (const a of att) aws.addRow([stwiDate(a.workDate), a.sourceStatus ?? '', a.status, a.firstCheckIn ? new Date(a.firstCheckIn).toISOString().slice(11, 16) : '', a.lastCheckOut ? new Date(a.lastCheckOut).toISOString().slice(11, 16) : '', a.workedHours == null ? '' : Number(a.workedHours), a.isLate ? 'Yes' : 'No', a.lateMinutes ?? '', Number(a.leaveFraction ?? 0), a.checkInNotes ?? '', a.checkOutNotes ?? '']);

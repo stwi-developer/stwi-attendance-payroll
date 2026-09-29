@@ -164,7 +164,7 @@ function RunDetail(){
         <p>Status: <strong>{run.status}</strong></p>
       </div>
       <div className="actions">
-        {run.status!=='FINALIZED'&&<button disabled={!!busy||!files.length} onClick={()=>action('upload',async()=>{const r=await api.uploadRun(id!,files);setFiles([]);await showUpload(r)},true)}>{L('run.btn.upload')}</button>}
+        {run.status!=='FINALIZED'&&<button disabled={!!busy||!files.length} onClick={async()=>{let r:any[]|null=null;await action('upload',async()=>{r=await api.uploadRun(id!,files);setFiles([])},true);if(r)await showUpload(r)}}>{L('run.btn.upload')}</button>}
         {run.status!=='FINALIZED'&&<button disabled={!!busy} onClick={()=>action('process',()=>api.processRun(id!))}>{L('run.btn.process')}</button>}
         {run.status!=='FINALIZED'&&<button disabled={!!busy} onClick={()=>action('calculate',()=>api.calculateRun(id!))}>{L('run.btn.calculate')}</button>}
         {run.status==='REVIEW'&&

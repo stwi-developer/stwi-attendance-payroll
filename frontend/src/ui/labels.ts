@@ -131,17 +131,16 @@ export const DEFAULT_LABELS: Record<string, LabelDef> = {
   'run.clearEdits.message': { group: 'Monthly run', text: 'The calculated values will be used again for this employee.' },
 
   // ---- reviews ----
-  'rev.btn.resolve': { group: 'Manual review', text: 'Resolve' },
-  'rev.resolve.title': { group: 'Manual review', text: 'Resolve review' },
-  'rev.leave.label': { group: 'Manual review', text: 'Leave for this day' },
-  'rev.leave.keep': { group: 'Manual review', text: 'Keep current' },
-  'rev.leave.0': { group: 'Manual review', text: '0 (present)' },
-  'rev.leave.half': { group: 'Manual review', text: '0.5 (half day)' },
-  'rev.leave.1': { group: 'Manual review', text: '1 (full day)' },
-  'rev.penalty.label': { group: 'Manual review', text: 'Penalty (₹)' },
-  'rev.ddl.label': { group: 'Manual review', text: 'Apply Double Deduction Leave (1 extra day, not covered by paid leave)' },
-  'rev.resolved': { group: 'Manual review', text: 'Review resolved.' },
-  'rev.delete.title': { group: 'Manual review', text: 'Delete this review?' },
+  'rev.banner.title': { group: 'Manual review', text: '{n} item(s) to fix in Zoho. Calculate stays blocked until all are fixed.' },
+  'rev.banner.text': { group: 'Manual review', text: 'Reviews cannot be resolved in the app. Fix every item in Zoho as shown in "How to fix in Zoho", export the attendance from Zoho again and upload the Excel file(s) again. The new file replaces the old one and its reviews.' },
+  'rev.banner.none': { group: 'Manual review', text: 'Nothing to fix in Zoho for this month. You can Calculate.' },
+  'rev.col.fix': { group: 'Manual review', text: 'How to fix in Zoho' },
+  'rev.info': { group: 'Manual review', text: 'Information (does not block)' },
+  'rev.page.sub': { group: 'Manual review', text: 'Read only: fix these in Zoho, then export and upload again.' },
+  'rev.leave.0': { group: 'Monthly run', text: '0 (present)' },
+  'rev.leave.half': { group: 'Monthly run', text: '0.5 (half day)' },
+  'rev.leave.1': { group: 'Monthly run', text: '1 (full day)' },
+  'att.sandwich': { group: 'Monthly run', text: 'Sandwich leave' },
 
   // ---- settings ----
   'set.btn.saveRule': { group: 'Settings', text: 'Save' },

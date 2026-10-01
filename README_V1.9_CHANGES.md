@@ -98,6 +98,79 @@ Branch: `feature/v1.9-employee-creation` (based on `main` @ 462ab8b, V1.7 + V1.8
 - **ZIP upload** (already supported): choose one `.zip` holding every employee's Zoho file in the run's Upload box. Each `.xls`/`.xlsx` inside is handled as its own file, and files already uploaded show DUPLICATE.
 - **"0.5 day Present, 0.5 day Absent / Regularized" = whole working day** whatever the hours (under 8:00 or 4:00): present, no leave, no Manual Review. It is now matched loosely (spacing, "Regularised"). Without "Regularized", the half-day review stays.
 
+- **Final "Attendance & Payment" export (29 Sep)**: Export Excel now builds STWI's own workbook layout with live formulas.
+  - **Payment Sheet**: same 20 headers (yellow, bold 13pt).
+    - G `=SUM(D/C*(K+O))`, J `=SUM(D-E-F-G-H-I)`.
+    - K/L/M/N/O/P link to the employee sheet's O12/O4/O5/O10/O11/O9.
+    - A1 = DRAFT until the month is finalized.
+  - **email summary**: two-column cards linked to the Payment Sheet.
+  - **One sheet per employee** (first name):
+    - Zoho rows in A–L (Payable Hours, breaks, Time Tracker Hours, Shift, Description), coloured like the Excel. Late check-in cells are orange, with a colour key.
+    - The N2:O26 block with the same labels and formulas.
+  - **Manual Review** and **Calculation Trace** at the end. Dates are dd/Mmm/yyyy, and every sheet prints landscape, one page wide.
+  - File name: `DRAFT - Attendance & Payment_Aug_2026.xlsx`, or `Attendance & Payment_Aug_2026.xlsx` after Finalize.
+  - Small differences from STWI's hand-made file, so every payable equals the app:
+    - O10 Paid Leave `=MIN(1.5,O9)`, so the deduction can't go negative.
+    - O26 also subtracts Penalty (O23), as the Payment Sheet's J does.
+    - G includes Double Deduction Leave (as in the Prakash row).
+    - Days before joining are added to Double Deduction Leave, with a note.
+    - E = security deposit deducted this month; F = other deductions (with a note).
+    - A row edited in Payroll Review gets the app's payable as a value, with a note.
+  - **Database**: migration `20260929160000_v1_9_attendance_source` adds `sourceJson` (the other Zoho columns of each day). Render applies it. **Upload a month again** so the breaks, shift and description fill in.
+
+## 7. V1.9 part 3 (1 Oct): fix in Zoho, notes rule, sandwich leave
+
+**Manual Review is read-only.**
+- No Resolve or Delete buttons; the API refuses them (400).
+- A red banner at the top of Manual Review (page and run) says: "N item(s) to fix in Zoho. Calculate stays blocked until all are fixed", then fix in Zoho, export again, upload again.
+- New column **How to fix in Zoho** (also in the export's Manual Review sheet):
+
+| Review | Fix in Zoho |
+|---|---|
+| R1 Checked in, no check-out | Add the check-out in Zoho (Regularization) or apply leave for the day. |
+| R2 No check-in on a working day | Apply STWI Leave (full or half) or regularize the day in Zoho. |
+| R3 Present under 8:00 | Regularize the day or apply STWI half-day leave in Zoho. |
+| R4 0.5 Present / 0.5 Absent under 8:00 | Regularize (it then shows "/ Regularized" = whole day) or apply half-day leave in Zoho. |
+| R5 STWI half day under 4:00 after lunch | Correct the check-in / check-out in Zoho (Regularize). |
+| R6 Unclear STWI leave | Correct the leave type in Zoho. |
+| R7 File doesn't match an employee | Fix the Employee ID in Zoho or the file name, then upload again. |
+| Note on the day | Remove the check-in / check-out note in Zoho, then export and upload again. |
+| No row for a date | Export the full month from Zoho and upload again. |
+| Leaver "Last month" | Information only (does not block): adjust the pay in Payroll Review > Edit. |
+
+- **Calculate** is blocked by every review except the leaver item.
+- **Uploading an employee's file again** removes all that employee's reviews (any status). They come back only for problems still in the new file. Old HR decisions are no longer re-applied (Q1d).
+- **Mismatch files**: deleting the file removes its "Could not match…" review. A file that failed (MISMATCH/ERROR) can be uploaded again, for example after the employee was created. It no longer shows as DUPLICATE.
+- **Penalty and Double Deduction Leave** are entered only in Payroll Review > Edit.
+
+**Notes rule.**
+- Any check-in or check-out note, on any day, sends the day to Manual Review. This includes weekends, holidays and "no lunch taken".
+- The day is on hold until the note is removed in Zoho and the file is uploaded again.
+- If the day already has another review, the note is added to it and the fix text says to remove the note too.
+- A cell with only "-" or "." counts as empty.
+- Once a "no lunch taken" note is removed, the lunch hour is deducted again. A 13:36 check-out then becomes an R5 review.
+
+**Sandwich leave.**
+- Weekend and holiday days next to full-day leave count as 1 day of leave each:
+  - Off days between two full-day leaves. Example: Fri leave, Sat, Sun, Mon leave → 4.
+  - The off days on both sides of a leave that has off days on both sides. Example: Sat 3, Sun 4, Mon 5 leave, Tue 6 holiday → 4.
+- **Counts as leave:** full-day STWI Leave, Absent, or a day edited to 1 day of leave.
+- **Breaks the chain:**
+  - half days
+  - Present or Regularized days
+  - an off day with a check-in (worked)
+  - days still in Manual Review
+  - missing days
+  - days before joining
+- 2nd and 4th Saturdays are working days. Only days inside the month count.
+- The leave total includes sandwich days, so the deduction is total − 1.5 (example: 4 → 2.5).
+- Recalculated after every upload, Process, Calculate and attendance add/edit/delete.
+- **Attendance table:** red row with "· Sandwich leave".
+- **Export:** red row, Status "… - Sandwich leave", N8 **Sandwich Leave** = count. O3 Leave excludes those days and O9 Total Leave includes them.
+- **Database:** migration `20261001120000_v1_9_sandwich_leave` adds `AttendanceRecord.isSandwich`. Render applies it.
+
+**After updating:** upload the open months again. Their reviews are rebuilt with the fix texts, and notes and sandwich days are applied.
+
 ## 5. Release steps (in this order)
 1. **Backup**: phpMyAdmin → `softtec1_attendance_payroll` → Export.
 2. **Database**: nothing to run by hand. The Render build command is `npm ci && npx prisma generate && npx prisma migrate deploy && npm run build`, so Render applies the V1.9 migration itself on deploy. `docs/sql/2026-09-28_v1.9_live_db.sql` is only a fallback if that command is ever changed.

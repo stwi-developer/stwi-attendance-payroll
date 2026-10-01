@@ -60,7 +60,7 @@ const query = (params: Record<string, unknown>) => {
 
 export type User = { id: string; email: string; name: string; role: string; status?: string };
 export type Pagination = { page: number; pageSize: number; total: number; totalPages: number };
-export type Page<T> = { data: T[]; pagination: Pagination };
+export type Page<T> = { data: T[]; pagination: Pagination; /** V1.9 reviews list: items that block Calculate */ blocking?: number };
 export type SalaryHistory = { id: string; effectiveFrom: string; grossSalary: string|number; notes?: string|null };
 export type DepositTransaction = { id: string; installmentNumber: number; amount: string|number; transactionDate: string; note?: string|null };
 export type SecurityDeposit = { id: string; triggerReason: string; previousSalary: string|number; currentSalary: string|number; requiredDeposit: string|number; alreadyHeld: string|number; additionalRequired: string|number; method: string; installmentCount: number; installmentAmount: string|number; status: string; transactions?: DepositTransaction[] };
@@ -75,8 +75,8 @@ export type ImportBatch = { id:string; fileName:string; status:string; createdAt
 export type Run = { id:string; year:number; month:number; status:string; createdAt:string; processedAt?:string|null; finalizedAt?:string|null; reopenedAt?:string|null; _count?:{files:number;attendance:number;manualReviews:number;payrollResults:number}; files?:AttendanceFile[]; manualReviews?:Review[]; payrollResults?:PayrollResult[] };
 export type AttendanceFile = { id:string; originalName:string; employeeCode?:string|null; status:string; uploadedAt:string; errorMessage?:string|null };
 export type PayrollResult = { id:string; employeeId:string; employee:Employee; grossSalary:string|number; calendarDays:number; weekOffDays:string|number; holidayDays:string|number; paidLeaveAllowance:string|number; stwiLeaveDays:string|number; lateMarks:number; lateLeaveDeduction:string|number; excessLeaveDeduction:string|number; doubleDeductionLeave:string|number; penalty:string|number; securityDeposit:string|number; ptax:string|number; otherDeductions:string|number; payableAmount:string|number; workingDays?:number; dailySalary?:number; leaveDeductionAmount?:number; halfDayCount?:number; totalLeave?:number; heldSecurityDeposit?:number; renewalDate?:string|null; deductionLeave?:number; manuallyEdited?:boolean; ruleSnapshot?:any };
-export type Review = { id:string; employee?:Employee|null; type:string; status:string; description:string; resolution?:string|null; penaltyAmount?:string|number|null; doubleDeductionLeave:boolean; createdAt:string; resolvedAt?:string|null };
-export type AttendanceRecord = { id:string; employee:Employee; employeeId:string; workDate:string; firstCheckIn?:string|null; lastCheckOut?:string|null; workedHours?:string|number|null; sourceStatus?:string|null; status:string; isLate:boolean; lateMinutes:number; leaveFraction?:string|number|null; isHoliday:boolean; isWeekOff:boolean; manualNotes?:string|null; checkInNotes?:string|null; checkOutNotes?:string|null; leaveEvent?:any };
+export type Review = { id:string; employee?:Employee|null; type:string; status:string; description:string; createdAt:string; /** V1.9: what to fix in Zoho */ solution?:string; /** false = information only (leaver), does not block Calculate */ blocking?:boolean };
+export type AttendanceRecord = { id:string; employee:Employee; employeeId:string; workDate:string; firstCheckIn?:string|null; lastCheckOut?:string|null; workedHours?:string|number|null; sourceStatus?:string|null; status:string; isLate:boolean; lateMinutes:number; leaveFraction?:string|number|null; isHoliday:boolean; isWeekOff:boolean; isSandwich?:boolean; manualNotes?:string|null; checkInNotes?:string|null; checkOutNotes?:string|null; leaveEvent?:any };
 
 export const api = {
   login:(email:string,password:string)=>request<{accessToken:string;user:User}>('/auth/login',{method:'POST',body:JSON.stringify({email,password})}),
@@ -129,8 +129,6 @@ export const api = {
   updateAttendance:(runId:string,attendanceId:string,payload:any)=>request<AttendanceRecord>(`/runs/${runId}/attendance/${attendanceId}`,{method:'PATCH',body:JSON.stringify(payload)}),
   deleteAttendance:(runId:string,attendanceId:string)=>request<any>(`/runs/${runId}/attendance/${attendanceId}`,{method:'DELETE'}),
   reviews:(id:string,params:Record<string,unknown>={})=>request<Page<Review>>(`/runs/${id}/reviews${query(params)}`),
-  resolveReview:(reviewId:string,payload:any)=>request<Review>(`/runs/reviews/${reviewId}`,{method:'PATCH',body:JSON.stringify(payload)}),
-  deleteReview:(reviewId:string)=>request<any>(`/runs/reviews/${reviewId}`,{method:'DELETE'}),
   payroll:(id:string,params:Record<string,unknown>={})=>request<Page<PayrollResult>>(`/runs/${id}/payroll${query(params)}`),
   setDepositMethod:(runId:string,employeeId:string,method:string)=>request<any>(`/runs/${runId}/payroll/${employeeId}/security-deposit`,{method:'PATCH',body:JSON.stringify({method})}),
   updatePayrollResult:(runId:string,employeeId:string,payload:any)=>request<any>(`/runs/${runId}/payroll/${employeeId}`,{method:'PATCH',body:JSON.stringify(payload)}),

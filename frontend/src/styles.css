@@ -343,3 +343,9 @@ table.xl-grid{border-collapse:collapse;font-size:12px;width:100%;table-layout:au
   .modal-foot{justify-content:stretch}
   .modal-foot button{flex:1}
 }
+
+/* V1.9 (1 Oct): read-only Manual Review */
+.review-banner{font-size:14px}
+.review-banner strong{display:block;margin-bottom:4px}
+.review-table td.review-fix{background:var(--stwi-yellow-soft);font-weight:600}
+.review-table tr.review-info td{color:var(--muted, #667)}

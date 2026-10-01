@@ -51,15 +51,23 @@ export class RunsController {
   @Patch(':id/attendance/:attendanceId') @Roles('CEO','HR','JUNIOR_HR') updateAttendance(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('attendanceId') attendanceId: string, @Body() body: any) { return this.service.updateAttendance(req.user.id, id, attendanceId, body); }
   @Delete(':id/attendance/:attendanceId') @Roles('CEO','HR','JUNIOR_HR') deleteAttendance(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('attendanceId') attendanceId: string) { return this.service.deleteAttendance(req.user.id, id, attendanceId); }
   @Get(':id/reviews') reviews(@Param('id') id: string, @Query() query: any) { return this.service.reviews(id, query); }
-  @Delete('/reviews/:reviewId') @Roles('CEO','HR') deleteReview(@Req() req: AuthenticatedRequest, @Param('reviewId') reviewId: string) { return this.service.deleteReview(req.user.id, reviewId); }
-  @Patch('/reviews/:reviewId') @Roles('CEO','HR','JUNIOR_HR') resolveReview(@Req() req: AuthenticatedRequest, @Param('reviewId') reviewId: string, @Body() body: any) { return this.service.resolveReview(req.user.id, reviewId, body); }
+  // V1.9 (STWI 1 Oct): reviews are read-only (fixed in Zoho + upload again).
+  @Delete('/reviews/:reviewId') @Roles('CEO','HR') deleteReview() { return this.service.reviewsAreReadOnly(); }
+  @Patch('/reviews/:reviewId') @Roles('CEO','HR','JUNIOR_HR') resolveReview() { return this.service.reviewsAreReadOnly(); }
   @Get(':id/payroll') payroll(@Param('id') id: string, @Query() query: any) { return this.service.payroll(id, query); }
   @Patch(':id/payroll/:employeeId') @Roles('CEO','HR') updatePayrollResult(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('employeeId') employeeId: string, @Body() body: any) { return this.service.updatePayrollResult(req.user.id, id, employeeId, body); }
   @Patch(':id/payroll/:employeeId/other-deduction') @Roles('CEO','HR') setOtherDeduction(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('employeeId') employeeId: string, @Body() body: { amount: number }) { return this.service.setOtherDeduction(req.user.id, id, employeeId, Number(body.amount)); }
   @Patch(':id/payroll/:employeeId/security-deposit') @Roles('CEO','HR') setDepositMethod(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('employeeId') employeeId: string, @Body() body: { method: 'FULL'|'EMI_3_MONTHS' }) { return this.service.setDepositMethod(req.user.id, id, employeeId, body.method); }
   @Post(':id/finalize') @Roles('CEO','HR') finalize(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.finalize(req.user.id, id); }
   @Post(':id/reopen') @Roles('CEO','HR') reopen(@Req() req: AuthenticatedRequest, @Param('id') id: string) { return this.service.reopen(req.user.id, id); }
-  @Get(':id/export') async export(@Param('id') id: string, @Res() res: Response) { const buffer = await this.service.exportWorkbook(id); res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', `attachment; filename=STWI_Attendance_Payroll_${id}.xlsx`); res.send(buffer); }
+  @Get(':id/export') async export(@Param('id') id: string, @Res() res: Response) {
+    const { buffer, fileName } = await this.service.exportWorkbook(id);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    // e.g. "Attendance & Payment_Aug_2026.xlsx" (DRAFT - … before Finalize)
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.send(buffer);
+  }
   @Patch(':runId/payroll/:employeeId/security-deposit/reset')
 @Roles('CEO', 'HR')
 async resetDepositMethod(

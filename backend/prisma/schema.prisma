@@ -231,6 +231,10 @@ model AttendanceRecord {
   // V1.9: Zoho "Check-in Notes" / "Check-out Notes"
   checkInNotes     String?          @db.Text
   checkOutNotes    String?          @db.Text
+  // V1.9: other Zoho columns of the day (breaks, payable hours, shift, description…) for the final Excel
+  sourceJson       Json?
+  // V1.9: weekend/holiday counted as 1 day leave (sandwich leave)
+  isSandwich       Boolean          @default(false)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 

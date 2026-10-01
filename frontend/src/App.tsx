@@ -12,21 +12,22 @@ import { fmtDate, fmtHours, fmtText, fmtTime } from './ui/date';
 import { busy as blocking, BusyHost, LoadingBar, LoadingBlock } from './ui/loading';
 
 
-// V1.7: one resolve dialog for both review screens. For reviews about a single
-// day, HR decides the leave for that day (0 / 0.5 / 1); it is written to the
-// attendance row and used by payroll.
-const DAY_REVIEW_TYPES=['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','UNEXPECTED_DURATION'];
-async function askReviewResolution(r:Review):Promise<any|null>{
-  const dayReview=DAY_REVIEW_TYPES.includes(r.type);
-  const v=await dialog.form({title:L('rev.resolve.title'),message:r.description,submitLabel:L('rev.btn.resolve'),fields:[
-    ...(dayReview?[{name:'leave',label:L('rev.leave.label'),type:'radio' as const,default:'',options:[{value:'',label:L('rev.leave.keep')},{value:'0',label:L('rev.leave.0')},{value:'0.5',label:L('rev.leave.half')},{value:'1',label:L('rev.leave.1')}]}]:[]),
-    {name:'penalty',label:L('rev.penalty.label'),type:'number',min:0,default:'0'},
-    {name:'ddl',label:L('rev.ddl.label'),type:'checkbox',default:false},
-  ]});
-  if(!v)return null;
-  const payload:any={resolution:'Resolved in web app',penaltyAmount:Number(v.penalty||0),doubleDeductionLeave:!!v.ddl};
-  if(dayReview&&v.leave!=='')payload.leaveFraction=Number(v.leave);
-  return payload;
+// V1.9 (STWI 1 Oct): Manual Review is read-only. Every item says what to fix in
+// Zoho; HR fixes it there, exports the attendance again and uploads it again.
+const REVIEW_TYPES=['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','EMPLOYEE_MISMATCH','UNEXPECTED_DURATION','OTHER'];
+function ReviewBanner({blocking}:{blocking?:number}){
+  if(blocking===undefined)return null;
+  return blocking>0
+    ? <div className="notice bad review-banner"><strong>{L('rev.banner.title',{n:blocking})}</strong><div>{L('rev.banner.text')}</div></div>
+    : <div className="notice review-banner">{L('rev.banner.none')}</div>;
+}
+function ReviewTable({rows}:{rows:Review[]}){
+  return <table className="review-table"><thead><tr><th>Employee</th><th>Type</th><th>Description</th><th>{L('rev.col.fix')}</th></tr></thead><tbody>{rows.map(r=><tr key={r.id} className={r.blocking===false?'review-info':''}>
+    <td className="nowrap" title={r.employee?.employeeCode||''}>{r.employee?.name||'—'}</td>
+    <td>{r.blocking===false?<span className="badge">{L('rev.info')}</span>:r.type}</td>
+    <td>{fmtText(r.description)}</td>
+    <td className="review-fix">{r.solution||''}</td>
+  </tr>)}</tbody></table>;
 }
 
 // V1.9: errors are shown as popups. setError(msg) opens the popup; ErrorBox is kept so old screens need no change.
@@ -40,7 +41,7 @@ function Dashboard({user}:{user:User}){const[data,setData]=useState<any>();const
   <Link className="metric metric-link" to="/runs" title="Open Monthly Run"><span>Latest Run</span><strong>{!data?'…':data.latestRun?`${monthName(data.latestRun.month)} ${data.latestRun.year}`:'—'}</strong><small>{data?.latestRun?.status||(data?'No run yet':'')} · Open Monthly Run →</small></Link>
   <Link className="metric metric-link" to="/reviews" title="Open Manual Review"><span>Open Reviews</span><strong>{data?(data.latestRun?.reviewsOpen??0):'…'}</strong><small>Latest run · Open Manual Review →</small></Link>
   <Link className="metric metric-link" to="/payroll" title="Open Payroll"><span>Payroll Results</span><strong>{data?(data.finalizedRuns??0):'…'}</strong><small>Finalized months · Open Payroll →</small></Link>
-</div><div className="grid"><Link className="card" to="/employees"><strong>Employees</strong><span>Master data, salary and deposit.</span></Link><Link className="card" to="/runs"><strong>Monthly Run</strong><span>Upload, process, review and calculate.</span></Link><Link className="card" to="/reviews"><strong>Manual Review</strong><span>Resolve attendance exceptions.</span></Link><Link className="card" to="/payroll"><strong>Payroll</strong><span>Review, export and finalize.</span></Link></div></div>}
+</div><div className="grid"><Link className="card" to="/employees"><strong>Employees</strong><span>Master data, salary and deposit.</span></Link><Link className="card" to="/runs"><strong>Monthly Run</strong><span>Upload, process, review and calculate.</span></Link><Link className="card" to="/reviews"><strong>Manual Review</strong><span>What to fix in Zoho before Calculate.</span></Link><Link className="card" to="/payroll"><strong>Payroll</strong><span>Review, export and finalize.</span></Link></div></div>}
 
 function Runs(){const nav=useNavigate();const now=new Date();const[result,setResult]=useState<Page<Run>|null>();const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[filters,setFilters]=useState({year:'',month:'',status:'',search:''});const[year,setYear]=useState(String(now.getFullYear()));const[month,setMonth]=useState(String(now.getMonth()+1));const[error,setError]=useErrorPopup();const load=()=>api.runs({...filters,page,pageSize}).then(setResult).catch(e=>setError(errMessage(e)));useEffect(()=>{void load()},[page,pageSize,JSON.stringify(filters)]);return <div><div className="page-head"><div><h1>Monthly Runs</h1><p>Upload → Process → Manual Review → Calculate → Finalize.</p></div></div><ErrorBox message={error}/><div className="split"><form className="panel" onSubmit={async e=>{e.preventDefault();try{const r=await api.createRun(Number(year),Number(month));nav(`/runs/${r.id}`)}catch(err){setError(errMessage(err))}}}><h3>Create Monthly Run</h3><label>Year<input type="number" value={year} onChange={e=>setYear(e.target.value)}/></label><label>Month<select value={month} onChange={e=>setMonth(e.target.value)}>{Array.from({length:12},(_,i)=><option key={i+1} value={i+1}>{monthName(i+1)}</option>)}</select></label><button>{L('run.btn.create')}</button></form><div className="panel"><div className="panel-head"><h3>Run History</h3><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPage(1)}}/></div><div className="filters"><input placeholder="Search year" value={filters.search} onChange={e=>setFilters({...filters,search:e.target.value})}/><select value={filters.year} onChange={e=>setFilters({...filters,year:e.target.value})}><option value="">All Years</option>{Array.from({length:7},(_,i)=>String(now.getFullYear()-i)).map(y=><option key={y}>{y}</option>)}</select><select value={filters.month} onChange={e=>setFilters({...filters,month:e.target.value})}><option value="">All Months</option>{Array.from({length:12},(_,i)=><option key={i+1} value={i+1}>{monthName(i+1)}</option>)}</select><select value={filters.status} onChange={e=>setFilters({...filters,status:e.target.value})}><option value="">All Statuses</option>{['DRAFT','PROCESSING','REVIEW','FINALIZED','REOPENED'].map(s=><option key={s}>{s}</option>)}</select><button onClick={()=>setFilters({year:'',month:'',status:'',search:''})}>{L('btn.clear')}</button></div>{result===undefined?<LoadingBlock/>:result?.data.length?<table><thead><tr><th>Month</th><th>Status</th><th>Files</th><th>Reviews</th><th>Payroll</th><th>Action</th></tr></thead><tbody>{result.data.map(r=><tr key={r.id}><td>{monthName(r.month)} {r.year}</td><td>{r.status}</td><td>{r._count?.files??0}</td><td>{r._count?.manualReviews??0}</td><td>{r._count?.payrollResults??0}</td><td><button onClick={()=>nav(`/runs/${r.id}`)}>{L('btn.open')}</button> <ConfirmButton title={L('run.delete.title')} message={L('run.delete.message')} onConfirm={async()=>{try{await api.deleteRun(r.id);await load()}catch(err){setError(errMessage(err))}}}>{L('btn.delete')}</ConfirmButton></td></tr>)}</tbody></table>:<div className="empty">No runs found.</div>}<PaginationControls pagination={result?.pagination} onChange={setPage}/></div></div></div>}
 
@@ -60,7 +61,7 @@ function RunDetail(){
   const[payPage,setPayPage]=useState(1);
   const[pageSize,setPageSize]=useState(100);
   const[attFilter,setAttFilter]=useState({search:'',status:'',late:'',leave:'',holiday:'',weekOff:'',manualReview:'',dateFrom:'',dateTo:''});
-  const[revFilter,setRevFilter]=useState({status:'OPEN',type:'',search:'',penaltyPresent:'',doubleDeductionLeave:''});
+  const[revFilter,setRevFilter]=useState({status:'OPEN',type:'',search:''});
   const[payFilter,setPayFilter]=useState({search:'',hasLate:'',hasLeave:'',hasPenalty:'',hasPtax:'',hasSecurityDeposit:'',minGross:'',maxGross:'',minPayable:'',maxPayable:''});
   const[selectedEmployeeId,setSelectedEmployeeId]=useState('');
   const[selectedPayrollEmployees,setSelectedPayrollEmployees]=useState<string[]>([]);
@@ -210,14 +211,14 @@ function RunDetail(){
       </div>
       {/* V1.9: Zoho columns (green in the Zoho file) + notes, in an Excel-style grid */}
       {attendance===undefined?<LoadingBlock/>:attendance?.data.length?<div className="xl-wrap"><table className="xl-grid"><thead><tr><th className="xl-rn">#</th><th>Date</th><th>Employee</th><th>Check-in</th><th>Check-out</th><th>Total Hours</th><th>Status</th><th>Check-in Notes</th><th>Check-out Notes</th><th>Late</th><th>Leave</th>{run.status!=='FINALIZED'&&<th>Actions</th>}</tr></thead><tbody>
-        {attendance.data.map((a,i)=><tr key={a.id} className={a.isWeekOff?'xl-weekend':a.isHoliday?'xl-holiday':a.status==='MANUAL_REVIEW'?'xl-review':Number(a.leaveFraction||0)>=1?'xl-leave':Number(a.leaveFraction||0)>0?'xl-half':''}>
+        {attendance.data.map((a,i)=><tr key={a.id} className={a.isSandwich?'xl-leave':a.isWeekOff?'xl-weekend':a.isHoliday?'xl-holiday':a.status==='MANUAL_REVIEW'?'xl-review':Number(a.leaveFraction||0)>=1?'xl-leave':Number(a.leaveFraction||0)>0?'xl-half':''}>
           <td className="xl-rn">{(attendance.pagination.page-1)*attendance.pagination.pageSize+i+1}</td>
           <td className="nowrap">{fmtDate(a.workDate)}</td>
           <td className="nowrap" title={a.employee.employeeCode}>{a.employee.name}</td>
           <td className="nowrap">{formatTime(a.firstCheckIn)}</td>
           <td className="nowrap">{formatTime(a.lastCheckOut)}</td>
           <td className="num">{fmtHours(a.workedHours)}</td>
-          <td className="xl-status" title={`System status: ${a.status}`}>{a.sourceStatus||a.status}</td>
+          <td className="xl-status" title={`System status: ${a.status}`}>{a.sourceStatus||a.status}{a.isSandwich&&<> · <b>{L('att.sandwich')}</b></>}</td>
           <td className="xl-note" title={a.checkInNotes||''}>{a.checkInNotes||''}</td>
           <td className="xl-note" title={a.checkOutNotes||''}>{a.checkOutNotes||''}</td>
           <td className={a.isLate?'xl-late':''}>{a.isLate?`Yes${a.lateMinutes?` (${a.lateMinutes}m)`:''}`:''}</td>
@@ -343,8 +344,9 @@ function RunDetail(){
 
     <section className="panel">
       <h3>Manual Review</h3>
-      <div className="filters"><select value={revFilter.status} onChange={e=>{setRevPage(1);setRevFilter({...revFilter,status:e.target.value})}}><option value="">All</option><option value="OPEN">Open</option><option value="RESOLVED">Resolved</option><option value="REJECTED">Rejected</option></select><select value={revFilter.type} onChange={e=>setRevFilter({...revFilter,type:e.target.value})}><option value="">All Types</option>{['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','EMPLOYEE_MISMATCH','UNEXPECTED_DURATION','OTHER'].map(x=><option key={x}>{x}</option>)}</select><input placeholder="Employee" value={revFilter.search} onChange={e=>setRevFilter({...revFilter,search:e.target.value})}/></div>
-      {reviews===undefined?<LoadingBlock/>:reviews?.data.length?<table><thead><tr><th>Status</th><th>Employee</th><th>Type</th><th>Description</th><th>Penalty</th><th>Double</th><th>Action</th></tr></thead><tbody>{reviews.data.map(r=><tr key={r.id}><td>{r.status}</td><td>{r.employee?.name||'—'}</td><td>{r.type}</td><td>{fmtText(r.description)}</td><td>{r.penaltyAmount??0}</td><td>{r.doubleDeductionLeave?'Yes':'No'}</td><td>{r.status==='OPEN'&&<button onClick={async()=>{const payload=await askReviewResolution(r);if(!payload)return;await action('resolve review',()=>api.resolveReview(r.id,payload))}} >{L('rev.btn.resolve')}</button>} {r.status!=='RESOLVED'&&<ConfirmButton title={L('rev.delete.title')} onConfirm={()=>action('delete review',()=>api.deleteReview(r.id))}>{L('btn.delete')}</ConfirmButton>}</td></tr>)}</tbody></table>:<div className="empty">No reviews match.</div>}
+      <ReviewBanner blocking={reviews?.blocking}/>
+      <div className="filters"><select value={revFilter.type} onChange={e=>{setRevPage(1);setRevFilter({...revFilter,type:e.target.value})}}><option value="">All Types</option>{REVIEW_TYPES.map(x=><option key={x}>{x}</option>)}</select><input placeholder="Employee" value={revFilter.search} onChange={e=>setRevFilter({...revFilter,search:e.target.value})}/></div>
+      {reviews===undefined?<LoadingBlock/>:reviews?.data.length?<ReviewTable rows={reviews.data}/>:<div className="empty">No reviews match.</div>}
       <PaginationControls pagination={reviews?.pagination} onChange={setRevPage}/>
     </section>
 
@@ -366,7 +368,7 @@ function RunDetail(){
           {e.employeeCode} — {e.employeeName}
         </label>)}
       </div>
-      <div className="panel-head"><h3>Payroll Calculation</h3><span className="muted">Click Calculate Payroll above after all Manual Reviews are resolved.</span></div>
+      <div className="panel-head"><h3>Payroll Calculation</h3><span className="muted">Click Calculate Payroll above after every Manual Review item is fixed in Zoho and the files are uploaded again.</span></div>
       {payroll?.data.length ? payroll.data.map((r:any)=>{const trace=r.ruleSnapshot?.calculationTrace||{}; return <div className="calculation-card" key={`calc-${r.employeeId}`}>
         <strong>{r.employee.name} ({r.employee.employeeCode})</strong>
         <div className="calculation-grid">
@@ -488,7 +490,7 @@ function RunDetail(){
             </div>
           </td></tr>}
         </>;
-      })}</tbody></table></div>:<div className="empty">Calculate payroll after processing and resolving reviews.</div>}
+      })}</tbody></table></div>:<div className="empty">Calculate payroll after processing, once nothing is left in Manual Review.</div>}
       <PaginationControls pagination={payroll?.pagination} onChange={setPayPage}/>
     </section>
 
@@ -502,7 +504,7 @@ function RunDetail(){
       {run.status==='FINALIZED'?<button onClick={()=>confirmThen(L('run.reopen.title'),L('run.reopen.message'),'reopen',()=>api.reopenRun(id!))}>{L('run.btn.reopen')}</button>:<button onClick={()=>confirmThen(L('run.finalize.title'),L('run.finalize.message'),'finalize',()=>api.finalizeRun(id!))}>{L('run.btn.finalize')}</button>}</div></section>
   </div>
 }
-function Reviews(){const[runs,setRuns]=useState<Page<Run>>();const[runId,setRunId]=useState('');const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[reviews,setReviews]=useState<Page<Review>>();const[filters,setFilters]=useState({status:'OPEN',type:'',search:'',penaltyPresent:'',doubleDeductionLeave:''});useEffect(()=>{api.runs({page:1,pageSize:100}).then(r=>{setRuns(r);if(!runId&&r.data[0])setRunId(r.data[0].id)}).catch(()=>{})},[]);useEffect(()=>{if(runId)api.reviews(runId,{...filters,page,pageSize}).then(setReviews).catch(()=>{})},[runId,page,pageSize,JSON.stringify(filters)]);return <div><div className="page-head"><div><h1>Manual Review</h1><p>Review exceptions across a selected run.</p></div></div><div className="panel"><div className="filters"><select value={runId} onChange={e=>{setRunId(e.target.value);setPage(1)}}>{runs?.data.map(r=><option key={r.id} value={r.id}>{monthName(r.month)} {r.year}</option>)}</select><select value={filters.status} onChange={e=>setFilters({...filters,status:e.target.value})}><option value="">All</option><option value="OPEN">Open</option><option value="RESOLVED">Resolved</option><option value="REJECTED">Rejected</option></select><select value={filters.type} onChange={e=>setFilters({...filters,type:e.target.value})}><option value="">All Types</option>{['MISSING_CHECKIN','MISSING_CHECKOUT','AMBIGUOUS_LEAVE','EMPLOYEE_MISMATCH','UNEXPECTED_DURATION','OTHER'].map(x=><option key={x}>{x}</option>)}</select><input placeholder="Search employee" value={filters.search} onChange={e=>setFilters({...filters,search:e.target.value})}/><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPage(1)}}/></div>{reviews===undefined&&(!runs||runs.data.length>0)?<LoadingBlock/>:reviews?.data.length?<table><thead><tr><th>Status</th><th>Employee</th><th>Type</th><th>Description</th><th>Action</th></tr></thead><tbody>{reviews.data.map(r=><tr key={r.id}><td>{r.status}</td><td>{r.employee?.name||'—'}</td><td>{r.type}</td><td>{fmtText(r.description)}</td><td>{r.status==='OPEN'&&<button onClick={async()=>{const payload=await askReviewResolution(r);if(!payload)return;try{await api.resolveReview(r.id,payload);setReviews(await api.reviews(runId,{...filters,page,pageSize}));await dialog.success(L('rev.resolved'))}catch(e){await dialog.error(errMessage(e))}}}>{L('rev.btn.resolve')}</button>} {r.status!=='RESOLVED'&&<button className="btn-secondary" onClick={async()=>{if(!(await dialog.confirm({tone:'danger',title:L('rev.delete.title'),confirmLabel:L('btn.delete')})))return;try{await api.deleteReview(r.id);setReviews(await api.reviews(runId,{...filters,page,pageSize}))}catch(e){await dialog.error(errMessage(e))}}}>{L('btn.delete')}</button>}</td></tr>)}</tbody></table>:<div className="empty">No reviews.</div>}<PaginationControls pagination={reviews?.pagination} onChange={setPage}/></div></div>}
+function Reviews(){const[runs,setRuns]=useState<Page<Run>>();const[runId,setRunId]=useState('');const[page,setPage]=useState(1);const[pageSize,setPageSize]=useState(25);const[reviews,setReviews]=useState<Page<Review>>();const[filters,setFilters]=useState({status:'OPEN',type:'',search:''});useEffect(()=>{api.runs({page:1,pageSize:100}).then(r=>{setRuns(r);if(!runId&&r.data[0])setRunId(r.data[0].id)}).catch(()=>{})},[]);useEffect(()=>{if(runId)api.reviews(runId,{...filters,page,pageSize}).then(setReviews).catch(()=>{})},[runId,page,pageSize,JSON.stringify(filters)]);return <div><div className="page-head"><div><h1>Manual Review</h1><p>{L('rev.page.sub')}</p></div></div><div className="panel"><ReviewBanner blocking={reviews?.blocking}/><div className="filters"><select value={runId} onChange={e=>{setRunId(e.target.value);setPage(1)}}>{runs?.data.map(r=><option key={r.id} value={r.id}>{monthName(r.month)} {r.year}</option>)}</select><select value={filters.type} onChange={e=>{setPage(1);setFilters({...filters,type:e.target.value})}}><option value="">All Types</option>{REVIEW_TYPES.map(x=><option key={x}>{x}</option>)}</select><input placeholder="Search employee" value={filters.search} onChange={e=>setFilters({...filters,search:e.target.value})}/><PageSize value={pageSize} onChange={v=>{setPageSize(v);setPage(1)}}/></div>{reviews===undefined&&(!runs||runs.data.length>0)?<LoadingBlock/>:reviews?.data.length?<ReviewTable rows={reviews.data}/>:<div className="empty">No reviews.</div>}<PaginationControls pagination={reviews?.pagination} onChange={setPage}/></div></div>}
 function Settings({user,onLabelsChanged}:{user:User;onLabelsChanged:()=>void}){const[rules,setRules]=useState<any[]>([]);const[search,setSearch]=useState('');const[tab,setTab]=useState<'rules'|'labels'>('rules');useEffect(()=>{api.rules().then(setRules).catch(e=>dialog.error(errMessage(e)))},[]);
   return <div><div className="page-head"><div><h1>Settings</h1><p>Business rules and the texts used on buttons and popups.</p></div></div>
   <div className="tabs page-tabs"><button className={tab==='rules'?'on':''} onClick={()=>setTab('rules')}>Rules</button><button className={tab==='labels'?'on':''} onClick={()=>setTab('labels')}>Labels &amp; popup texts</button></div>

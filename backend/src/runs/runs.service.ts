@@ -130,6 +130,9 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const XL_DATE = 'dd\\/mmm\\/yyyy';
 const XL_TIME = 'hh:mm AM/PM';
 const XL_DATETIME = 'dd\\/mmm\\/yyyy hh:mm AM/PM';
+const XL_DATETIME_24 = 'dd\\/mmm\\/yyyy h:mm';
+/** ISO dates inside a text -> dd/Mmm/yyyy */
+const stwiText = (t: string) => t.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (all, y, m, d) => (+m >= 1 && +m <= 12 ? `${d}/${MONTHS[+m - 1]}/${y}` : all));
 function sameDay(a: Date, b: Date) { return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10); }
 function dateKey(d: Date) { return d.toISOString().slice(0, 10); }
 function expectedLogin(status: string, leaveType: 'full' | 'first_half' | 'second_half' | 'half_day' | 'none') {
@@ -282,7 +285,7 @@ function expectedLoginForAttendance(
 //      weekends/holidays exempt; full-day STWI leave = 1 day, no late;
 //      missing check-in on a working day -> Manual Review.
 // ---------------------------------------------------------------------------
-type ReviewKind = 'MISSING_CHECKIN' | 'MISSING_CHECKOUT' | 'AMBIGUOUS_LEAVE' | 'UNEXPECTED_DURATION';
+type ReviewKind = 'MISSING_CHECKIN' | 'MISSING_CHECKOUT' | 'AMBIGUOUS_LEAVE' | 'UNEXPECTED_DURATION' | 'OTHER';
 export type AttendanceDecision = {
   status: any;
   leaveFraction: number;
@@ -293,7 +296,12 @@ export type AttendanceDecision = {
   weekend: boolean;
   reviewType: ReviewKind | null;
   reviewReason: string;
+  /** V1.9 notes rule: text of the Zoho check-in/check-out notes, added to the review */
+  noteText: string;
 };
+
+/** V1.9 notes rule: start of the review text when the day has only a note */
+export const NOTE_REVIEW_PREFIX = 'Note written in Zoho';
 
 const LUNCH_START = 12 * 60 + 30;
 const LUNCH_END = 13 * 60 + 30;
@@ -324,10 +332,39 @@ export function classifyAttendanceRow(
     weekend,
     reviewType: null,
     reviewReason: '',
+    noteText: '',
   };
+  classifyDay(d, row, workDate, cfg, { holiday, weekend, normalized, shortHoursAction, classification, hours, hasCheckIn, firstMin });
 
+  // V1.9 notes rule (STWI 1 Oct): any check-in or check-out note on any day,
+  // weekends and holidays included, sends the day to Manual Review. It stays
+  // there until the note is removed in Zoho and the file is uploaded again.
+  // (a cell with only "-" or "." is treated as empty)
+  const hasText = (v?: string | null) => Boolean(v && !/^[\s\-–—.]*$/.test(v));
+  const notes: string[] = [];
+  if (hasText(row.checkInNotes)) notes.push(`Check-in note: "${row.checkInNotes!.trim().slice(0, 200)}"`);
+  if (hasText(row.checkOutNotes)) notes.push(`Check-out note: "${row.checkOutNotes!.trim().slice(0, 200)}"`);
+  if (notes.length) {
+    d.noteText = ` ${notes.join('; ')}.`;
+    d.status = 'MANUAL_REVIEW';
+    if (!d.reviewType) {
+      d.reviewType = 'OTHER';
+      d.reviewReason = NOTE_REVIEW_PREFIX;
+    }
+  }
+  return d;
+}
+
+function classifyDay(
+  d: AttendanceDecision,
+  row: { status: string; firstCheckIn: Date | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkOutNotes?: string | null },
+  workDate: Date,
+  cfg: { minHalf: number; maxHalf: number; fullDayHours: number },
+  x: { holiday: boolean; weekend: boolean; normalized: string; shortHoursAction: string; classification: ReturnType<typeof leaveClassification>; hours: number | null; hasCheckIn: boolean; firstMin: number | null },
+) {
+  const { holiday, weekend, normalized, shortHoursAction, classification, hours, hasCheckIn, firstMin } = x;
   // Weekends and holidays: no leave, no late mark, no review.
-  if (holiday || weekend) return d;
+  if (holiday || weekend) return;
 
   // Q2 + Q3 + Q5a: explicit Zoho "Absent".
   if (normalized === 'absent') {
@@ -336,9 +373,9 @@ export function classifyAttendanceRow(
     d.leaveType = 'ABSENT';
     if (hasCheckIn && !row.lastCheckOut) {
       d.reviewType = 'MISSING_CHECKOUT';
-      d.reviewReason = 'Checked in but no check-out (Zoho: Absent, counted as 1 day leave unless HR decides otherwise)';
+      d.reviewReason = 'Checked in but no check-out (Zoho: Absent)';
     }
-    return d;
+    return;
   }
 
   if (shortHoursAction === 'REGULARIZED_PRESENT') {
@@ -349,7 +386,7 @@ export function classifyAttendanceRow(
     if (hours == null || hours < cfg.fullDayHours) {
       d.status = 'MANUAL_REVIEW';
       d.reviewType = 'UNEXPECTED_DURATION';
-      d.reviewReason = `Zoho half-day under ${formatHours(cfg.fullDayHours)} hours - decide leave`;
+      d.reviewReason = `Zoho half-day under ${formatHours(cfg.fullDayHours)} hours`;
     } else {
       d.status = 'HALF_DAY';
       d.leaveFraction = 0.5;
@@ -366,7 +403,7 @@ export function classifyAttendanceRow(
     if (classification.manual) {
       d.status = 'MANUAL_REVIEW';
       d.reviewType = 'AMBIGUOUS_LEAVE';
-      d.reviewReason = 'Ambiguous STWI leave - decide leave';
+      d.reviewReason = 'Unclear STWI leave status';
     } else if (classification.type !== 'full' && hasCheckIn) {
       // Q4: short hours -> review instead of automatic shortfall leave.
       const halfDayCase = ['half_day', 'first_half', 'second_half'].includes(classification.type);
@@ -384,15 +421,13 @@ export function classifyAttendanceRow(
           d.status = 'MANUAL_REVIEW';
           d.reviewType = 'UNEXPECTED_DURATION';
           d.reviewReason = lunch > 0 && !noLunch
-            ? `STWI half day: ${formatHours(worked / 60)} after the 12:30-13:30 lunch hour (needs ${formatHours(required)}; no "no lunch taken" check-out note) - check and decide leave`
-            : `STWI half day: only ${formatHours(worked / 60)} worked (needs ${formatHours(required)}) - check and decide leave`;
-          if (row.checkInNotes) d.reviewReason += `. Check-in note: "${row.checkInNotes.slice(0, 200)}"`;
-          if (row.checkOutNotes) d.reviewReason += `. Check-out note: "${row.checkOutNotes.slice(0, 200)}"`;
+            ? `STWI half day: ${formatHours(worked / 60)} after the 12:30-13:30 lunch hour (needs ${formatHours(required)})`
+            : `STWI half day: only ${formatHours(worked / 60)} worked (needs ${formatHours(required)})`;
         }
       } else if (hours != null && hours < required) {
         d.status = 'MANUAL_REVIEW';
         d.reviewType = 'UNEXPECTED_DURATION';
-        d.reviewReason = `Short hours (needs ${formatHours(required)}) - check status and decide leave`;
+        d.reviewReason = `Short hours (needs ${formatHours(required)})`;
       }
     }
   }
@@ -401,7 +436,7 @@ export function classifyAttendanceRow(
   if (classification.type !== 'full' && !hasCheckIn && shortHoursAction !== 'REGULARIZED_PRESENT') {
     d.status = 'MANUAL_REVIEW';
     d.reviewType = 'MISSING_CHECKIN';
-    d.reviewReason = 'No check-in on a working day - decide leave';
+    d.reviewReason = 'No check-in on a working day';
   }
 
   // Late mark (unchanged thresholds: 09:30 / 14:30 for first-half leave).
@@ -414,7 +449,6 @@ export function classifyAttendanceRow(
       d.lateMinutes = Math.round(firstMin - expMin);
     }
   }
-  return d;
 }
 
 // Last instant of the payroll month (V1.7 fix: previously resolved to the
@@ -429,19 +463,44 @@ function formatHours(h: number | null | undefined) {
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-// A per-day leave decision taken in Manual Review is stored in the review
-// resolution as "[leave=0.5]" so it can be re-applied after a re-upload.
-function parseLeaveDecision(resolution: string | null | undefined): number | null {
-  const m = resolution?.match(/\[leave=([0-9.]+)\]/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
+// ---------------------------------------------------------------------------
+// V1.9 (STWI 1 Oct): Manual Review is read-only. Each review says what to fix
+// in Zoho; HR fixes it there, exports the attendance again and uploads it again.
+// Every review blocks Calculate except the information item for a leaver.
+// ---------------------------------------------------------------------------
+export const LEAVER_REVIEW_PREFIX = 'Last month:';
+export const BLOCKING_REVIEW = { NOT: { description: { startsWith: LEAVER_REVIEW_PREFIX } } };
+export const REVIEW_READ_ONLY_MESSAGE = 'Manual Review items cannot be resolved in the app. Fix them in Zoho, export the attendance again and upload the file(s) again.';
+const NOTE_FIX = 'Remove the check-in / check-out note in Zoho, then export and upload again.';
+
+/** What to do in Zoho (or the file) for one review. */
+export function reviewSolution(type: string, description: string): string {
+  const d = description ?? '';
+  let fix: string;
+  if (d.startsWith(LEAVER_REVIEW_PREFIX)) return 'Information only (does not block Calculate): adjust this month\'s pay in Payroll Review > Edit.';
+  if (d.startsWith(NOTE_REVIEW_PREFIX)) return NOTE_FIX;
+  switch (type) {
+    case 'MISSING_CHECKOUT': fix = 'Add the check-out in Zoho (Regularization) or apply leave for the day.'; break;
+    case 'MISSING_CHECKIN':
+      fix = d.startsWith('No attendance record was found')
+        ? 'The file has no row for this date: export the full month from Zoho and upload again.'
+        : 'Apply STWI Leave (full or half) or regularize the day in Zoho.';
+      break;
+    case 'UNEXPECTED_DURATION':
+      if (d.startsWith('Zoho half-day under')) fix = 'Regularize (it then shows "/ Regularized" = whole day) or apply half-day leave in Zoho.';
+      else if (d.startsWith('STWI half day')) fix = 'Correct the check-in / check-out in Zoho (Regularize) so the half day has 4:00 after the 12:30-13:30 lunch hour.';
+      else fix = 'Regularize the day or apply STWI half-day leave in Zoho.';
+      break;
+    case 'AMBIGUOUS_LEAVE': fix = 'Correct the leave type in Zoho.'; break;
+    case 'EMPLOYEE_MISMATCH': fix = 'Fix the Employee ID in Zoho or the file name, then upload again.'; break;
+    default: fix = 'Fix the day in Zoho, then export and upload again.';
+  }
+  if (/(Check-in|Check-out) note: "/.test(d)) fix += ' Also remove the check-in / check-out note in Zoho.';
+  return fix;
 }
 
-function statusForLeave(leave: number): any {
-  if (leave <= 0) return 'PRESENT';
-  if (leave >= 1) return 'ABSENT';
-  return 'HALF_DAY';
+export function withSolution<T extends { type: any; description: string }>(r: T) {
+  return { ...r, solution: reviewSolution(String(r.type), r.description), blocking: !r.description?.startsWith(LEAVER_REVIEW_PREFIX) };
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +656,7 @@ export class RunsService {
   async get(id: string) {
     const run = await this.prisma.payrollRun.findUnique({ where: { id }, include: { files: true, manualReviews: { include: { employee: true, assignedTo: true }, orderBy: { createdAt: 'desc' } }, payrollResults: { include: { employee: true }, orderBy: { employee: { name: 'asc' } } } } });
     if (!run) throw new NotFoundException('Payroll run not found');
-    return run;
+    return { ...run, manualReviews: run.manualReviews.map(withSolution) };
   }
 
   async uploadFiles(userId: string, runId: string, files: Express.Multer.File[]) {
@@ -607,6 +666,10 @@ export class RunsService {
     const out: any[] = [];
     for (const file of files ?? []) {
       const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+      // V1.9: a file that failed before (no matching employee / unreadable) may be
+      // uploaded again, e.g. after the employee was created; the old failed
+      // entry and its mismatch review are removed first.
+      await this.removeFailedFiles(runId, { OR: [{ fileHash: hash }, { originalName: file.originalname }] });
       const duplicate = await this.prisma.attendanceFile.findFirst({ where: { payrollRunId: runId, fileHash: hash } });
       if (duplicate) { out.push({ file: file.originalname, status: 'DUPLICATE' }); continue; }
 
@@ -650,7 +713,7 @@ export class RunsService {
         // V1.7: mark the file itself as MISMATCH so Process does not later
         // flag it PROCESSED although no rows were imported from it.
         await this.prisma.attendanceFile.update({ where: { id: attendanceFile.id }, data: { status: 'MISMATCH', errorMessage: `Filename suggests ${filenameEmployeeCode}, worksheet contains ${parsed.employeeCode}.` } });
-        await this.prisma.manualReview.create({ data: { payrollRunId: runId, employeeId: employee.id, type: 'EMPLOYEE_MISMATCH', description: `Employee ID mismatch: filename suggests ${filenameEmployeeCode}, worksheet contains ${parsed.employeeCode}.` } });
+        await this.prisma.manualReview.create({ data: { payrollRunId: runId, employeeId: employee.id, type: 'EMPLOYEE_MISMATCH', description: `Employee ID mismatch in file ${file.originalname}: filename suggests ${filenameEmployeeCode}, worksheet contains ${parsed.employeeCode}.` } });
         out.push({ file: file.originalname, status: 'MISMATCH', employeeCode: parsed.employeeCode, filenameEmployeeCode });
         continue;
       }
@@ -670,15 +733,14 @@ export class RunsService {
       }
 
       // A fresh upload for the same employee/month replaces the previously
-      // IMPORTED attendance for that employee (handover §8). V1.7 preserves:
+      // IMPORTED attendance for that employee (handover §8). Kept:
       //   * manual-entry attendance rows (added by HR in the app),
-      //   * RESOLVED / REJECTED Manual Reviews (penalties, double-deduction
-      //     ticks and per-day leave decisions stay on record),
-      //   * the PayrollResult row (manual Payroll Review edits and the chosen
-      //     security-deposit method); it is refreshed on the next Calculate.
-      // Only OPEN reviews are cleared; they are rebuilt from the new file.
+      //   * the PayrollResult row (manual Payroll Review edits, penalty, double-
+      //     deduction leave, deposit method); it is refreshed on the next Calculate.
+      // V1.9 (STWI 1 Oct): ALL of this employee's reviews are cleared (any
+      // status). They are rebuilt from the new Zoho file, which decides.
       await this.prisma.manualReview.deleteMany({
-        where: { payrollRunId: runId, employeeId: employee.id, status: 'OPEN' },
+        where: { payrollRunId: runId, employeeId: employee.id },
       });
 
       const oldFiles = await this.prisma.attendanceFile.findMany({
@@ -741,24 +803,12 @@ export class RunsService {
           if (manualDates.has(dateKey(workDate))) { skippedManual++; continue; }
 
           const decision = classifyAttendanceRow(row, workDate, { minHalf, maxHalf, fullDayHours });
-          let { status, leaveFraction, late, lateMinutes, reviewType, reviewReason } = decision;
+          const { status, leaveFraction, late, lateMinutes, reviewType, reviewReason } = decision;
+          // V1.9 (STWI 1 Oct): reviews are fixed in Zoho, not in the app, so no
+          // earlier decision is re-applied here; the new file decides.
           const reviewDescription = reviewType
-            ? `${reviewReason} on ${dateKey(workDate)} (Zoho: "${row.status}", hours ${formatHours(row.totalHours)}).`
+            ? `${reviewReason} on ${dateKey(workDate)} (Zoho: "${row.status}", hours ${formatHours(row.totalHours)}).${decision.noteText}`
             : null;
-
-          // If HR already decided this exact case (same employee, date, status and
-          // hours - e.g. the same file uploaded again) and
-          // the review is closed, re-apply that decision instead of reopening.
-          if (reviewDescription) {
-            const closed = await this.prisma.manualReview.findFirst({
-              where: { payrollRunId: runId, employeeId: employee.id, description: reviewDescription, status: { not: 'OPEN' } },
-            });
-            const decided = parseLeaveDecision(closed?.resolution);
-            if (closed && decided !== null) {
-              leaveFraction = decided;
-              status = statusForLeave(decided);
-            }
-          }
 
           const data = {
             attendanceFileId: attendanceFile.id,
@@ -768,6 +818,7 @@ export class RunsService {
             sourceStatus: row.status,
             checkInNotes: row.checkInNotes ?? null,
             checkOutNotes: row.checkOutNotes ?? null,
+            sourceJson: row.source ?? undefined,
             status,
             isLate: late,
             lateMinutes,
@@ -794,6 +845,7 @@ export class RunsService {
           if (reviewType && reviewDescription) await this.ensureReview(runId, employee.id, reviewType, reviewDescription);
           imported++;
         }
+        await this.recomputeSandwich(runId, employee.id);
         if (!imported) {
           await this.prisma.attendanceFile.update({ where: { id: attendanceFile.id }, data: { status: 'ERROR', errorMessage: 'No attendance rows for this payroll month were found in the file.' } });
           out.push({ file: file.originalname, status: 'ERROR', employeeCode, error: 'No attendance rows for this payroll month were found in the file.' });
@@ -807,6 +859,17 @@ export class RunsService {
     }
     await this.audit.log({ userId, action: 'UPLOAD_ATTENDANCE', entityType: 'PayrollRun', entityId: runId, afterJson: out });
     return out;
+  }
+
+  /** Failed (MISMATCH / ERROR) file entries matching `match`, with their mismatch reviews. */
+  private async removeFailedFiles(runId: string, match: any) {
+    const failed = await this.prisma.attendanceFile.findMany({ where: { payrollRunId: runId, status: { in: ['MISMATCH', 'ERROR'] }, ...match } });
+    for (const f of failed) {
+      const used = await this.prisma.attendanceRecord.count({ where: { attendanceFileId: f.id } });
+      if (used) continue;
+      await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, type: 'EMPLOYEE_MISMATCH', description: { contains: f.originalName } } });
+      await this.prisma.attendanceFile.delete({ where: { id: f.id } });
+    }
   }
 
   async removeRun(userId: string, runId: string) {
@@ -829,6 +892,8 @@ export class RunsService {
     if (records.length) await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: { in: records.map((x) => x.id) } } });
     await this.prisma.attendanceRecord.deleteMany({ where: { attendanceFileId: fileId } });
     await this.prisma.attendanceFile.delete({ where: { id: fileId } });
+    // V1.9: the "could not match file ..." review goes with the file.
+    await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, type: 'EMPLOYEE_MISMATCH', description: { contains: file.originalName } } });
     if (employeeIds.length) {
       await this.prisma.payrollResult.deleteMany({ where: { payrollRunId: runId, employeeId: { in: employeeIds } } });
       await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, employeeId: { in: employeeIds } } });
@@ -867,6 +932,7 @@ export class RunsService {
     });
     await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: record.id } });
     if (p.leaveFraction > 0) await this.prisma.leaveEvent.create({ data: { payrollRunId: runId, employeeId: employee.id, attendanceRecordId: record.id, leaveFraction: p.leaveFraction, leaveType: p.leaveFraction === 1 ? 'FULL_DAY' : 'HALF_DAY', approved: true } });
+    await this.recomputeSandwich(runId, employee.id);
     await this.audit.log({ userId, employeeId: employee.id, action: 'MANUAL_ATTENDANCE_UPSERT', entityType: 'AttendanceRecord', entityId: record.id, afterJson: record });
     return record;
   }
@@ -898,6 +964,7 @@ if (run.status === 'FINALIZED') {
     const updated = await this.prisma.attendanceRecord.update({ where: { id: attendanceId }, data: { workDate: p.d, firstCheckIn: has('firstCheckIn') ? p.firstCheckIn : existing.firstCheckIn, lastCheckOut: has('lastCheckOut') ? p.lastCheckOut : existing.lastCheckOut, workedHours: has('workedHours') ? p.hours : existing.workedHours, sourceStatus: body.sourceStatus ?? existing.sourceStatus ?? 'MANUAL ENTRY', status: p.status, isLate: p.isLate, lateMinutes: p.lateMinutes, leaveFraction: p.leaveFraction || null, isHoliday: Boolean(body.isHoliday), isWeekOff: Boolean(body.isWeekOff), manualNotes: body.manualNotes ?? existing.manualNotes }, include: { employee: true } });
     await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: attendanceId } });
     if (p.leaveFraction > 0) await this.prisma.leaveEvent.create({ data: { payrollRunId: runId, employeeId: existing.employeeId, attendanceRecordId: attendanceId, leaveFraction: p.leaveFraction, leaveType: p.leaveFraction === 1 ? 'FULL_DAY' : 'HALF_DAY', approved: true } });
+    await this.recomputeSandwich(runId, existing.employeeId);
     await this.audit.log({ userId, employeeId: existing.employeeId, action: 'UPDATE_ATTENDANCE', entityType: 'AttendanceRecord', entityId: attendanceId, beforeJson: existing, afterJson: updated });
     return updated;
   }
@@ -925,35 +992,9 @@ if (run.status === 'FINALIZED') {
     if (!existing) throw new NotFoundException('Attendance record not found');
     await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: attendanceId } });
     await this.prisma.attendanceRecord.delete({ where: { id: attendanceId } });
+    await this.recomputeSandwich(runId, existing.employeeId);
     await this.audit.log({ userId, employeeId: existing.employeeId, action: 'DELETE_ATTENDANCE', entityType: 'AttendanceRecord', entityId: attendanceId, beforeJson: existing });
     return { deleted: true, id: attendanceId };
-  }
-
-  async deleteReview(userId: string, reviewId: string) {
-    const review = await this.prisma.manualReview.findUnique({ where: { id: reviewId } });
-    if (!review) throw new NotFoundException('Review not found');
-    const run =
-  await this.prisma.payrollRun.findUnique({
-    where: {
-      id: review.payrollRunId,
-    },
-  });
-
-if (!run) {
-  throw new NotFoundException(
-    'Payroll run not found',
-  );
-}
-
-if (run.status === 'FINALIZED') {
-  throw new BadRequestException(
-    'Finalized run is locked',
-  );
-}
-    if (review.status === 'RESOLVED') throw new BadRequestException('Resolved reviews are retained for audit and cannot be deleted.');
-    await this.prisma.manualReview.delete({ where: { id: reviewId } });
-    await this.audit.log({ userId, employeeId: review.employeeId ?? undefined, action: 'DELETE_REVIEW', entityType: 'ManualReview', entityId: reviewId, beforeJson: review });
-    return { deleted: true, id: reviewId };
   }
 
   parseAttendanceWorkbook(buffer: Buffer) {
@@ -1087,6 +1128,20 @@ const totalHoursIdx = findCol(headers, [
     const inNotesIdx = findCol(headers, ['Check-in Notes', 'Check In Notes']);
     const outNotesIdx = findCol(headers, ['Check-out Notes', 'Check Out Notes']);
     const note = (v: any) => { const t = String(v ?? '').trim(); return t ? t.slice(0, 2000) : null; };
+    // V1.9: the rest of the Zoho row, kept for the final "Attendance & Payment" Excel
+    const extraCols: Record<string, number> = {
+      employeeName: findCol(headers, ['Employee Name']),
+      totalHours: totalHoursIdx,
+      paidBreak: findCol(headers, ['Total paid break', 'Total Paid Break']),
+      unpaidBreak: findCol(headers, ['Total unpaid break', 'Total Unpaid Break']),
+      permission: findCol(headers, ['Permission']),
+      payableHours: findCol(headers, ['Payable Hours']),
+      shift: findCol(headers, ['Shift(s)', 'Shift']),
+      description: findCol(headers, ['Description']),
+      checkInLocation: findCol(headers, ['Check-in Location']),
+      checkOutLocation: findCol(headers, ['Check-out Location']),
+    };
+    const hhmm = (v: any) => (typeof v === 'number' && v < 1 ? `${String(Math.floor(v * 24)).padStart(2, '0')}:${String(Math.round((v * 24 * 60) % 60)).padStart(2, '0')}` : v);
 
     if (dateIdx < 0 || statusIdx < 0) {
       throw new Error('Attendance file must contain Date and Status columns.');
@@ -1129,6 +1184,7 @@ const totalHoursIdx = findCol(headers, [
   lastCheckOutMinutes: sourceTimeMinutes(r[lastIdx]),
   checkInNotes: inNotesIdx >= 0 ? note(r[inNotesIdx]) : null,
   checkOutNotes: outNotesIdx >= 0 ? note(r[outNotesIdx]) : null,
+  source: Object.fromEntries(Object.entries(extraCols).filter(([, i]) => i >= 0).map(([k, i]) => [k, note(hhmm(r[i]))]).filter(([, v]) => v !== null)),
 });
     }
 
@@ -1218,35 +1274,10 @@ const totalHoursIdx = findCol(headers, [
 
         const holiday = holidaySet.has(dateKey(d));
         const weekend = isWeekendDay(d);
-        let status: any = holiday ? 'HOLIDAY' : weekend ? 'WEEK_OFF' : 'MANUAL_REVIEW';
-        let leaveFraction = 0;
-
-        // Re-apply a decision HR already took for this missing day.
-        if (!holiday && !weekend) {
-          const closed = await this.prisma.manualReview.findFirst({
-            where: { payrollRunId: runId, employeeId: emp.id, description: missingDayDescription, status: { not: 'OPEN' } },
-          });
-          const decided = parseLeaveDecision(closed?.resolution);
-          if (closed && decided !== null) {
-            leaveFraction = decided;
-            status = statusForLeave(decided);
-          }
-        }
-
-        const record = await this.prisma.attendanceRecord.create({
-          data: {
-            payrollRunId: runId,
-            employeeId: emp.id,
-            workDate: d,
-            status,
-            leaveFraction: leaveFraction || null,
-            isHoliday: holiday,
-            isWeekOff: weekend,
-          },
+        const status: any = holiday ? 'HOLIDAY' : weekend ? 'WEEK_OFF' : 'MANUAL_REVIEW';
+        await this.prisma.attendanceRecord.create({
+          data: { payrollRunId: runId, employeeId: emp.id, workDate: d, status, isHoliday: holiday, isWeekOff: weekend },
         });
-        if (leaveFraction > 0) {
-          await this.prisma.leaveEvent.create({ data: { payrollRunId: runId, employeeId: emp.id, attendanceRecordId: record.id, leaveFraction, leaveType: 'REVIEW_DECISION', approved: true } });
-        }
 
         if (!holiday && !weekend) {
           await this.ensureReview(runId, emp.id, 'MISSING_CHECKIN', missingDayDescription);
@@ -1260,7 +1291,8 @@ const totalHoursIdx = findCol(headers, [
     });
 
     await this.flagLeavers(run);
-    const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
+    for (const emp of employees) await this.recomputeSandwich(runId, emp.id);
+    const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN', ...BLOCKING_REVIEW } });
     const status = 'REVIEW';
     const updated = await this.prisma.payrollRun.update({ where: { id: runId }, data: { status, processedAt: new Date() } });
     await this.audit.log({ userId, action: 'PROCESS_ATTENDANCE', entityType: 'PayrollRun', entityId: runId, afterJson: { importedCount, openReviews } });
@@ -1278,8 +1310,75 @@ const totalHoursIdx = findCol(headers, [
     const leavers = await this.prisma.employee.findMany({ where: { id: { in: withAttendance.map((a) => a.employeeId) }, deletedAt: null, dateOfExit: { gte: start, lte: end } } });
     for (const e of leavers) {
       const exit = dateKey(e.dateOfExit!); // shown as dd/Mmm/yyyy by the app
-      await this.ensureReview(run.id, e.id, 'OTHER', `Last month: ${e.name} left on ${exit} (Date of Exit). Check this month's pay by hand in Payroll Review (days after the exit, security deposit, final settlement), then resolve this review.`);
+      await this.ensureReview(run.id, e.id, 'OTHER', `Last month: ${e.name} left on ${exit} (Date of Exit). Check this month's pay by hand in Payroll Review (days after the exit, security deposit, final settlement).`);
     }
+  }
+
+  /**
+   * V1.9 (STWI 1 Oct) sandwich leave. Weekend / holiday days next to full-day
+   * leave count as leave (1 day each), inside the payroll month only:
+   *  - off days between two full-day leaves (Fri leave, Sat, Sun, Mon leave),
+   *  - the off days on both sides of a leave that has off days on both sides
+   *    (Sat, Sun, Mon leave, Tue holiday = 4 days).
+   * Only a full-day STWI Leave or Absent counts as leave here. Half days,
+   * present / regularized days, off days with a check-in (worked), days still
+   * in Manual Review, missing days and days before the joining date break the chain. A 2nd/4th Saturday is a
+   * working day. Sandwich days go into the leave total, so the 1.5 paid
+   * leave allowance applies to them (deduction = total - 1.5).
+   */
+  async recomputeSandwich(runId: string, employeeId: string) {
+    const run = await this.prisma.payrollRun.findUnique({ where: { id: runId } });
+    const emp = await this.prisma.employee.findUnique({ where: { id: employeeId }, select: { joiningDate: true } });
+    if (!run || !emp) return 0;
+    const old = await this.prisma.attendanceRecord.findMany({ where: { payrollRunId: runId, employeeId, isSandwich: true }, select: { id: true } });
+    if (old.length) {
+      await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: { in: old.map((r) => r.id) } } });
+      await this.prisma.attendanceRecord.updateMany({ where: { id: { in: old.map((r) => r.id) } }, data: { isSandwich: false, leaveFraction: null } });
+    }
+    const records = await this.prisma.attendanceRecord.findMany({ where: { payrollRunId: runId, employeeId } });
+    const byDay = new Map(records.map((r) => [dateKey(r.workDate), r]));
+    const days = new Date(Date.UTC(run.year, run.month, 0)).getUTCDate();
+    const joined = emp.joiningDate ? Date.UTC(emp.joiningDate.getUTCFullYear(), emp.joiningDate.getUTCMonth(), emp.joiningDate.getUTCDate()) : 0;
+    // 'O' off day, 'L' full-day leave, 'P' anything else (breaks a sandwich)
+    const cls: ('O' | 'L' | 'P')[] = [];
+    const recs: (typeof records[number] | undefined)[] = [];
+    for (let day = 1; day <= days; day++) {
+      const t = Date.UTC(run.year, run.month - 1, day);
+      const r = byDay.get(dateKey(new Date(t)));
+      recs.push(r);
+      if (!r || t < joined) cls.push('P');
+      // an off day with a check-in was worked, so it breaks the chain
+      else if ((r.isWeekOff || r.isHoliday) && (r.status === 'WEEK_OFF' || r.status === 'HOLIDAY') && !r.firstCheckIn) cls.push('O');
+      // full-day STWI leave / Absent (or a day HR edited to 1 day leave)
+      else if (!r.isWeekOff && !r.isHoliday && Number(r.leaveFraction ?? 0) >= 1 && r.status !== 'MANUAL_REVIEW') cls.push('L');
+      else cls.push('P');
+    }
+    // blocks of equal class
+    const blocks: { c: string; from: number; to: number }[] = [];
+    cls.forEach((c, i) => { const b = blocks[blocks.length - 1]; if (b && b.c === c) b.to = i; else blocks.push({ c, from: i, to: i }); });
+    const isO = (i: number) => blocks[i]?.c === 'O';
+    const isL = (i: number) => blocks[i]?.c === 'L';
+    const mark = new Set<number>();
+    blocks.forEach((b, i) => {
+      if (b.c !== 'O') return;
+      const between = isL(i - 1) && isL(i + 1);
+      const besideWrapped = (isL(i - 1) && isO(i - 2)) || (isL(i + 1) && isO(i + 2));
+      if (between || besideWrapped) mark.add(i);
+    });
+    let count = 0;
+    for (const i of mark) {
+      for (let k = blocks[i].from; k <= blocks[i].to; k++) {
+        const r = recs[k]!;
+        await this.prisma.attendanceRecord.update({ where: { id: r.id }, data: { isSandwich: true, leaveFraction: 1 } });
+        await this.prisma.leaveEvent.upsert({
+          where: { attendanceRecordId: r.id },
+          update: { leaveFraction: 1, leaveType: 'SANDWICH' },
+          create: { payrollRunId: runId, employeeId, attendanceRecordId: r.id, leaveFraction: 1, leaveType: 'SANDWICH', approved: true },
+        });
+        count++;
+      }
+    }
+    return count;
   }
 
   private async ensureReview(runId: string, employeeId: string, type: any, description: string) {
@@ -1305,44 +1404,13 @@ const totalHoursIdx = findCol(headers, [
       this.prisma.manualReview.findMany({ where, include: { employee: true }, orderBy: { createdAt: 'desc' }, skip, take: pageSize }),
       this.prisma.manualReview.count({ where }),
     ]);
-    return paged(data, total, page, pageSize);
+    const blocking = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN', ...BLOCKING_REVIEW } });
+    return { ...paged(data.map(withSolution), total, page, pageSize), blocking };
   }
 
-  async resolveReview(userId: string, reviewId: string, body: { resolution?: string; penaltyAmount?: number; doubleDeductionLeave?: boolean; status?: 'RESOLVED' | 'REJECTED'; leaveFraction?: number | string | null }) {
-    const review = await this.prisma.manualReview.findUnique({ where: { id: reviewId } });
-    if (!review) throw new NotFoundException('Review not found');
-    const run = await this.prisma.payrollRun.findUnique({ where: { id: review.payrollRunId } });
-    if (!run) throw new NotFoundException('Payroll run not found');
-    if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
-    if (review.status !== 'OPEN') throw new BadRequestException('Review is already closed');
-    const status = body.status === 'REJECTED' ? 'REJECTED' : 'RESOLVED';
-
-    // V1.7: HR decides the leave for the day under review (0 = present,
-    // 0.5 = half day, 1 = full day). The decision is written to that day's
-    // attendance row and kept in the resolution text as "[leave=x]" so it is
-    // re-applied if the same file is uploaded again.
-    let resolution = body.resolution ?? null;
-    const hasLeaveDecision = body.leaveFraction !== undefined && body.leaveFraction !== null && body.leaveFraction !== '';
-    if (hasLeaveDecision) {
-      const leave = Number(body.leaveFraction);
-      if (!Number.isFinite(leave) || leave < 0 || leave > 1) throw new BadRequestException('Leave for the day must be between 0 and 1 (e.g. 0, 0.5 or 1).');
-      const date = review.description.match(/(\d{4}-\d{2}-\d{2})/)?.[1];
-      if (!review.employeeId || !date) throw new BadRequestException('This review is not linked to a single attendance day, so a leave decision cannot be applied.');
-      const record = await this.prisma.attendanceRecord.findUnique({
-        where: { payrollRunId_employeeId_workDate: { payrollRunId: review.payrollRunId, employeeId: review.employeeId, workDate: new Date(`${date}T00:00:00.000Z`) } },
-      });
-      if (!record) throw new NotFoundException(`No attendance row found for ${date}. Process Attendance first.`);
-      const before = { ...record };
-      await this.prisma.attendanceRecord.update({ where: { id: record.id }, data: { leaveFraction: leave || null, status: statusForLeave(leave) } });
-      await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: record.id } });
-      if (leave > 0) await this.prisma.leaveEvent.create({ data: { payrollRunId: review.payrollRunId, employeeId: review.employeeId, attendanceRecordId: record.id, leaveFraction: leave, leaveType: 'REVIEW_DECISION', approved: true } });
-      await this.audit.log({ userId, employeeId: review.employeeId, action: 'REVIEW_LEAVE_DECISION', entityType: 'AttendanceRecord', entityId: record.id, beforeJson: before, afterJson: { leaveFraction: leave, reviewId } });
-      resolution = `${resolution ? resolution + ' ' : ''}[leave=${leave}]`;
-    }
-
-    const updated = await this.prisma.manualReview.update({ where: { id: reviewId }, data: { status, resolution, penaltyAmount: body.penaltyAmount, doubleDeductionLeave: body.doubleDeductionLeave ?? review.doubleDeductionLeave, assignedToId: userId, resolvedAt: new Date() } });
-    await this.audit.log({ userId, employeeId: review.employeeId ?? undefined, action: 'RESOLVE', entityType: 'ManualReview', entityId: reviewId, beforeJson: review, afterJson: updated });
-    return updated;
+  /** V1.9 (STWI 1 Oct): reviews are read-only; they are fixed in Zoho and the file is uploaded again. */
+  reviewsAreReadOnly(): never {
+    throw new BadRequestException(REVIEW_READ_ONLY_MESSAGE);
   }
 
   async calculatePayroll(runId: string, userId: string) {
@@ -1352,8 +1420,10 @@ const totalHoursIdx = findCol(headers, [
     const sourceCount = await this.prisma.attendanceFile.count({ where: { payrollRunId: runId, status: 'PROCESSED' } });
     if (!sourceCount) throw new BadRequestException('Process at least one uploaded attendance file before calculating payroll.');
     await this.flagLeavers(run);
-    const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
-    if (openReviews) throw new BadRequestException(`Resolve all ${openReviews} open Manual Review item(s) before calculating payroll.`);
+    // V1.9 (STWI 1 Oct): every review blocks Calculate except the information
+    // item for an employee's last month.
+    const openReviews = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN', ...BLOCKING_REVIEW } });
+    if (openReviews) throw new BadRequestException(`${openReviews} Manual Review item(s) still need fixing in Zoho. Fix them in Zoho, export the attendance again and upload the file(s) again, then Calculate.`);
 
     const rules = await this.rulesSnapshot(run.year, run.month);
     const sourceEmployeeRows = await this.prisma.attendanceRecord.findMany({
@@ -1379,10 +1449,10 @@ const totalHoursIdx = findCol(headers, [
     for (const emp of employees) {
       const gross = emp.salaryHistory[0] ? Number(emp.salaryHistory[0].grossSalary) : 0;
       if (!gross) continue;
+      await this.recomputeSandwich(runId, emp.id);
 
-      const [records, reviews, existingResult] = await Promise.all([
+      const [records, existingResult] = await Promise.all([
         this.prisma.attendanceRecord.findMany({ where: { payrollRunId: runId, employeeId: emp.id }, orderBy: { workDate: 'asc' } }),
-        this.prisma.manualReview.findMany({ where: { payrollRunId: runId, employeeId: emp.id, status: 'RESOLVED' } }),
         this.prisma.payrollResult.findUnique({ where: { payrollRunId_employeeId: { payrollRunId: runId, employeeId: emp.id } } }),
       ]);
 
@@ -1404,8 +1474,10 @@ const totalHoursIdx = findCol(headers, [
       const holidayDays = employed.filter(r => r.isHoliday && !r.isWeekOff).length;
       const leaveUsed = money(employed.reduce((s, r) => s + Number(r.leaveFraction ?? 0), 0));
       const lateMarks = employed.filter(r => r.isLate).length;
-      const doubleDeductionLeave = reviews.reduce((s, r) => s + (r.doubleDeductionLeave ? rules.double_deduction_leave_days : 0), 0);
-      const penalty = money(reviews.reduce((s, r) => s + Number(r.penaltyAmount ?? 0), 0));
+      // V1.9 (STWI 1 Oct): penalty and double-deduction leave are entered only in
+      // the Payroll Review editor (overrides), no longer in Manual Review.
+      const doubleDeductionLeave = 0;
+      const penalty = 0;
       // Confirmed STWI rule: gross salary strictly greater than ₹12,000 attracts ₹200 P.Tax.
       // V1.9: P.Tax can be switched off per employee (Employee > Payroll details)
       const ptax = emp.professionalTaxApplicable && gross > rules.ptax_threshold ? rules.ptax_amount : 0;
@@ -1507,6 +1579,7 @@ const totalHoursIdx = findCol(headers, [
         calculationTrace: traceOf(calculated, base, securityDeposit, otherDeductions),
         effective: traceOf(eff, base, securityDeposit, otherDeductions),
         manualOverrides,
+        sandwichDays: employed.filter((r) => r.isSandwich).length,
         ...(existingSnapshot.depositSkipped ? { depositSkipped: true } : {}),
       };
       const columns = {
@@ -1884,104 +1957,210 @@ const totalHoursIdx = findCol(headers, [
     };
   }
 
-  async exportWorkbook(runId: string) {
+/**
+   * V1.9: the final "Attendance & Payment" workbook, laid out exactly like STWI's
+   * own file (Payment Sheet, email summary, one sheet per employee with the
+   * N2:O26 summary block, same labels and formulas), then Manual Review and
+   * Calculation Trace. Amounts are Excel formulas; every payable equals the app's.
+   * Before Finalize the file is marked DRAFT (file name + Payment Sheet A1).
+   */
+  async exportWorkbook(runId: string): Promise<{ buffer: Buffer; fileName: string }> {
     const run = await this.get(runId);
-    const attendance = await this.prisma.attendanceRecord.findMany({
-      where: { payrollRunId: runId },
-      include: { employee: true, leaveEvent: true },
-      orderBy: [{ workDate: 'asc' }, { employee: { name: 'asc' } }],
-    });
-    const payroll = await this.prisma.payrollResult.findMany({
-      where: { payrollRunId: runId },
-      include: { employee: true },
-      orderBy: { employee: { name: 'asc' } },
-    });
-    const reviews = await this.prisma.manualReview.findMany({
-      where: { payrollRunId: runId },
-      include: { employee: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    const transactions = await this.prisma.securityDepositTransaction.findMany({ where: { employeeId: { in: payroll.map(r => r.employeeId) } } });
-    const heldByEmployee = new Map<string, number>();
-    for (const tx of transactions) heldByEmployee.set(tx.employeeId, (heldByEmployee.get(tx.employeeId) || 0) + Number(tx.amount));
+    const payroll = await this.prisma.payrollResult.findMany({ where: { payrollRunId: runId }, include: { employee: true }, orderBy: { employee: { name: 'asc' } } });
+    if (!payroll.length) throw new BadRequestException('Calculate payroll first, then export the Excel.');
+    const attendance = await this.prisma.attendanceRecord.findMany({ where: { payrollRunId: runId }, orderBy: { workDate: 'asc' } });
+    const reviews = await this.prisma.manualReview.findMany({ where: { payrollRunId: runId, status: 'OPEN' }, include: { employee: true }, orderBy: { createdAt: 'desc' } });
+    const draft = run.status !== 'FINALIZED';
+    const calendarDays = new Date(Date.UTC(run.year, run.month, 0)).getUTCDate();
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'STWI Attendance & Payroll';
+    wb.calcProperties.fullCalcOnLoad = true;
+    const thin = { style: 'thin' as const, color: { argb: 'FF000000' } };
+    const BOX = { top: thin, left: thin, bottom: thin, right: thin };
+    const solid = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
+    const YELLOW = solid('FFFFFF00');
+    const F_WEEKEND = solid('FF34A853'), F_HOLIDAY = solid('FF00FF00'), F_HALF = solid('FF00FFFF'), F_LEAVE = solid('FFFF0000'), F_LATE = solid('FFFFC000');
+    const font = (o: Partial<ExcelJS.Font> = {}) => ({ name: 'Calibri', size: 11, ...o });
+    const f = (formula: string, result?: number) => ({ formula, result } as any);
+    const hmm = (v: any) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(v ?? '')); return m ? (Number(m[1]) * 60 + Number(m[2])) / 1440 : null; };
+    const MONEY = '#,##0.00';
 
-    // Keep the first sheet compatible with the existing August Payment Sheet structure.
     const paySheet = wb.addWorksheet('Payment Sheet');
-    paySheet.addRow(['','Name','Working Day','Monthly Payment','SD Dudcation Month','Security Deposit','Leave','Pently','P.Tax','Payable AMT','DeductionLeave','Half Day','Late Mark','Paid Leave','Double Deduction Leave','Total Leave','Join Date','Renewal Date','Deposit','Details Decripations']);
-    for (let index = 0; index < payroll.length; index++) {
-      const r = payroll[index];
-      const records = attendance.filter(a => a.employeeId === r.employeeId);
-      const halfDays = records.reduce((sum, a) => sum + (a.status === 'HALF_DAY' || Number(a.leaveFraction ?? 0) === 0.5 ? 0.5 : 0), 0);
-      const leaveUsed = Number(r.stwiLeaveDays);
-      const workingDays = r.calendarDays - Number(r.weekOffDays) - Number(r.holidayDays);
-      const snap = (r.ruleSnapshot as any) || {};
-      const trace = snap.calculationTrace;
-      const overrides = snap.manualOverrides || {};
-      // V1.7: same arithmetic as the app (computePayroll), including edits.
-      const eff = computePayroll(baseFromResult(r), overrides, Number(r.securityDeposit), Number(r.otherDeductions));
-      paySheet.addRow([
-        index + 1,
-        r.employee.name,
-        Number(overrides.workingDays ?? workingDays),
-        eff.grossSalary,
-        Number(r.securityDeposit),
-        Number(r.securityDeposit),
-        eff.leaveDeductionAmount,
-        eff.penalty,
-        eff.ptax,
-        eff.payableAmount,
-        eff.deductionLeave,
-        Number(overrides.halfDayCount ?? halfDays),
-        eff.lateMarks,
-        eff.paidLeaveAllowance,
-        eff.doubleDeductionLeave,
-        Number(overrides.totalLeave ?? money(leaveUsed + eff.lateLeaveDeduction)),
-        overrides.joinDate ? new Date(overrides.joinDate) : (r.employee.joiningDate ?? ''),
-        overrides.renewalDate ? (/^\d{4}-\d{2}-\d{2}/.test(String(overrides.renewalDate)) ? new Date(`${String(overrides.renewalDate).slice(0, 10)}T00:00:00Z`) : overrides.renewalDate) : '',
-        Number(overrides.heldSecurityDeposit ?? (heldByEmployee.get(r.employeeId) || 0)),
-        overrides.details || (trace ? JSON.stringify(trace) : ''),
-      ]);
-    }
-    this.styleHeader(paySheet, 1);
-    for (const cell of ['D','E','F','G','H','I','J','S']) paySheet.getColumn(cell).numFmt = '₹#,##0.00';
-    paySheet.getColumn('Q').numFmt = XL_DATE;
-    paySheet.getColumn('R').numFmt = XL_DATE;
-
     const emailSheet = wb.addWorksheet('email summary');
-    emailSheet.addRow(['Employee ID','Employee Name','Email','Gross Salary','Payable Amount','Run Month']);
-    for (const r of payroll) emailSheet.addRow([r.employee.employeeCode, r.employee.name, r.employee.email ?? '', Number(r.grossSalary), Number(r.payableAmount), `${MONTHS[run.month - 1]}/${run.year}`]);
-    this.styleHeader(emailSheet, 1);
-    emailSheet.getColumn('D').numFmt = '₹#,##0.00'; emailSheet.getColumn('E').numFmt = '₹#,##0.00';
 
+    // ---------------------------------------------------------------- employee sheets
+    const usedNames = new Set<string>(['payment sheet', 'email summary', 'manual review', 'calculation trace']);
+    type Line = { r: any; eff: ReturnType<typeof computePayroll>; sheet: string; deposit: number; other: number; held: number; mismatch: boolean; expected: number };
+    const lines: Line[] = [];
+    for (const r of payroll) {
+      const e = r.employee;
+      const snap = (r.ruleSnapshot as any) || {};
+      const overrides = snap.manualOverrides || {};
+      const base = baseFromResult(r);
+      const deposit = Number(r.securityDeposit);
+      const other = Number(r.otherDeductions);
+      const eff = computePayroll(base, overrides, deposit, other);
+      const days = Number(r.calendarDays) || calendarDays;
+
+      let sheet = (e.firstName || e.name.split(' ')[0] || e.employeeCode).replace(/[\\/?*[\]:]/g, '-').slice(0, 31);
+      if (usedNames.has(sheet.toLowerCase())) sheet = `${e.name} ${e.employeeCode}`.replace(/[\\/?*[\]:]/g, '-').slice(0, 31);
+      usedNames.add(sheet.toLowerCase());
+      const ws = wb.addWorksheet(sheet);
+
+      // A-L: the Zoho day rows (headers as in STWI's sheet)
+      const head = ['Employee Id', 'Employee Name', 'Date', 'First Check-In', 'Last Check-Out', 'Payable Hours', 'Total Paid Break', 'Total Unpaid Break', 'Time Tracker Hours', 'Status', 'Shift(s)', 'Description'];
+      head.forEach((h, i) => { const c = ws.getCell(1, i + 1); c.value = h; c.fill = YELLOW; c.font = font({ bold: true }); c.border = BOX; });
+      const recs = attendance.filter((a) => a.employeeId === r.employeeId);
+      let halfCount = 0; let leaveUsed = 0; let sandwichCount = 0;
+      recs.forEach((a, i) => {
+        const row = i + 2;
+        const src: any = a.sourceJson || {};
+        const lf = Number(a.leaveFraction ?? 0);
+        leaveUsed += lf; if (lf === 0.5) halfCount++;
+        if (a.isSandwich) sandwichCount++;
+        const vals: any[] = [e.employeeCode, src.employeeName || e.firstName || e.name, a.workDate, a.firstCheckIn ?? null, a.lastCheckOut ?? null,
+          hmm(src.totalHours) ?? (a.workedHours == null ? null : Number(a.workedHours) / 24), hmm(src.paidBreak), hmm(src.unpaidBreak), a.firstCheckIn ? hmm(src.payableHours) : null,
+          (a.sourceStatus || a.status) + (a.isSandwich ? ' - Sandwich leave' : ''), src.shift ?? null, src.description ?? null];
+        vals.forEach((v, c) => { const cell = ws.getCell(row, c + 1); cell.value = v; cell.border = BOX; cell.font = font(); });
+        ws.getCell(row, 3).numFmt = XL_DATE;
+        ws.getCell(row, 4).numFmt = XL_DATETIME_24; ws.getCell(row, 5).numFmt = XL_DATETIME_24;
+        for (const c of [6, 7, 8, 9]) ws.getCell(row, c).numFmt = 'h:mm';
+        const fill = a.isSandwich ? F_LEAVE : a.isWeekOff && !a.isHoliday ? F_WEEKEND : a.isHoliday ? F_HOLIDAY : lf >= 1 ? F_LEAVE : lf > 0 ? F_HALF : null;
+        if (fill) for (let c = 1; c <= 12; c++) ws.getCell(row, c).fill = fill;
+        if (a.isLate) { const c = ws.getCell(row, 4); c.fill = F_LATE; c.font = font({ bold: true }); }
+      });
+
+      // N2:O26: STWI's summary block (same rows, labels and formulas)
+      const halfDays = Number(overrides.halfDayCount ?? halfCount);
+      const lateCount = eff.lateMarks;
+      const totalLeave = Number(overrides.totalLeave ?? money(base.leaveUsed + eff.lateLeaveDeduction));
+      const ddl = money(eff.doubleDeductionLeave + (base.notEmployedDays ?? 0));
+      const set = (addr: string, v: any, fmt?: string) => { const c = ws.getCell(addr); c.value = v; c.border = BOX; c.font = font(); c.alignment = { horizontal: addr.startsWith('O') ? 'center' : undefined }; if (fmt) c.numFmt = fmt; };
+      const label = (row: number, text: string) => set(`N${row}`, text);
+      label(2, 'Total Working Days'); set('O2', days);
+      label(3, 'Leave'); set('O3', money(base.leaveUsed - halfCount * 0.5 - sandwichCount));
+      label(4, 'Half Day'); set('O4', f(`0.5*${halfCount}`, halfDays * 0.5));
+      label(5, 'Late Mark'); set('O5', eff.lateLeaveDeduction); set('P5', lateCount);
+      label(6, 'Early Check out'); set('O6', 0);
+      label(7, 'Missing Selfie'); set('O7', 0);
+      // V1.9 (STWI 1 Oct): weekend / holiday days counted as leave
+      label(8, 'Sandwich Leave'); set('O8', sandwichCount);
+      label(9, 'Total Leave'); set('O9', totalLeave);
+      label(10, 'Paid Leave'); set('O10', f(`MIN(${eff.paidLeaveAllowance},O9)`, Math.min(eff.paidLeaveAllowance, totalLeave)));
+      label(11, 'Double Deduction Leave'); set('O11', ddl);
+      if (base.notEmployedDays) { const c = ws.getCell('P11'); c.value = `incl. ${base.notEmployedDays} day(s) before joining`; c.font = font({ italic: true, color: { argb: 'FF808080' } }); }
+      const ded = Math.max(0, totalLeave - eff.paidLeaveAllowance);
+      label(12, 'Deduction Leave'); set('O12', overrides.deductionLeave != null && overrides.deductionLeave !== '' ? money(eff.deductionLeave - ddl) : f('O9-O10', ded));
+      label(13, 'Total Working Days'); set('O13', f('O2-O11-O12'));
+      label(14, 'Paid Leave'); set('O14', f('O19/O2*O10'), MONEY);
+      label(15, 'Leave Deducation'); set('O15', f('O19/O2*(O12+O11)'), MONEY);
+      if (other) { label(17, 'Other Deduction'); set('O17', other, MONEY); }
+      label(19, 'Total Payment'); set('O19', eff.grossSalary, MONEY);
+      label(20, 'Per Day'); set('O20', overrides.dailySalary != null && overrides.dailySalary !== '' ? eff.dailySalary : f('O19/O2'), MONEY);
+      label(21, 'Working Day Payment'); set('O21', f('O20*O13'), MONEY);
+      label(22, 'Security Deposit Deducation'); set('O22', deposit, MONEY);
+      label(23, 'Penalty'); set('O23', eff.penalty, MONEY);
+      label(24, 'P.Tax'); set('O24', eff.ptax, MONEY);
+      label(25, 'Paid Leave'); set('O25', 0);
+      // what the formulas give; if Payroll Review edits change it, the app's figure is written instead
+      const perDay = overrides.dailySalary != null && overrides.dailySalary !== '' ? eff.dailySalary : eff.grossSalary / days;
+      const dedLeave = (typeof ws.getCell('O12').value === 'number' ? Number(ws.getCell('O12').value) : ded);
+      const expected = perDay * (days - ddl - dedLeave) - deposit - eff.penalty - eff.ptax - other;
+      const mismatch = Math.abs(expected - eff.payableAmount) > 0.02;
+      label(26, 'Payable Amt');
+      if (mismatch) {
+        set('O26', eff.payableAmount, MONEY);
+        const c = ws.getCell('P26'); c.value = 'edited in Payroll Review'; c.font = font({ italic: true, color: { argb: 'FF808080' } });
+      } else set('O26', f(`O20*O13-O22-O23-O24${other ? '-O17' : ''}`, eff.payableAmount), MONEY);
+      for (const addr of ['N26', 'O26']) ws.getCell(addr).font = font({ bold: true });
+
+      // colour key
+      const key: [string, any][] = [['Weekend', F_WEEKEND], ['Holiday', F_HOLIDAY], ['Half day', F_HALF], ['Full-day leave / Absent / Sandwich leave', F_LEAVE], ['Late mark (First Check-In)', F_LATE]];
+      ws.getCell('N29').value = 'Colour key'; ws.getCell('N29').font = font({ bold: true });
+      key.forEach(([t, fill], i) => { const a = ws.getCell(`N${30 + i}`); a.value = t; a.border = BOX; a.font = font(); const b = ws.getCell(`O${30 + i}`); b.fill = fill; b.border = BOX; });
+
+      for (const [col, w] of Object.entries({ A: 12, B: 16, C: 13, D: 18, E: 18, F: 9, G: 9, H: 9, I: 10, J: 30, K: 22, L: 20, N: 26, O: 12, P: 12 })) ws.getColumn(col).width = w;
+      lines.push({ r, eff, sheet, deposit, other, held: await this.deposits.getHeldAmount(r.employeeId), mismatch, expected });
+    }
+
+    // ---------------------------------------------------------------- Payment Sheet
+    const hdr = ['', 'Name', 'Working Day', 'Monthly Payment', 'SD Dudcation Month', 'Security Deposit', 'Leave', 'Pently', 'P.Tax', 'Payable AMT', 'DeductionLeave', 'Half Day', 'Late Mark', 'Paid Leave', 'Double Deduction Leave', 'Total Leave', 'Join Date', 'Renewal Date', 'Deposit', 'Details Decripations'];
+    hdr.forEach((h, i) => {
+      const c = paySheet.getCell(1, i + 1); c.value = h; c.border = BOX;
+      if (i === 0) { c.font = { name: 'Arial', size: 10 }; return; }
+      c.fill = YELLOW; c.font = font({ size: 13, bold: true }); c.alignment = { horizontal: 'center' };
+    });
+    if (draft) { const a = paySheet.getCell('A1'); a.value = 'DRAFT'; a.font = { name: 'Arial', size: 13, bold: true, color: { argb: 'FFC00000' } }; }
+    lines.forEach((l, i) => {
+      const row = i + 2; const s = `'${l.sheet.replace(/'/g, "''")}'!`;
+      const ov = ((l.r.ruleSnapshot as any)?.manualOverrides) || {};
+      const join = ov.joinDate ? new Date(`${String(ov.joinDate).slice(0, 10)}T00:00:00Z`) : l.r.employee.joiningDate ?? null;
+      const renewal = ov.renewalDate ? (/^\d{4}-\d{2}-\d{2}/.test(String(ov.renewalDate)) ? new Date(`${String(ov.renewalDate).slice(0, 10)}T00:00:00Z`) : ov.renewalDate) : null;
+      const vals: any[] = [
+        i + 1, l.r.employee.name, Number(l.r.calendarDays) || calendarDays, l.eff.grossSalary, l.deposit, l.other || 0,
+        f(`SUM(D${row}/C${row}*(K${row}+O${row}))`, l.eff.leaveDeductionAmount), l.eff.penalty || null, l.eff.ptax,
+        l.mismatch ? l.eff.payableAmount : f(`SUM(D${row}-E${row}-F${row}-G${row}-H${row}-I${row})`, l.eff.payableAmount),
+        f(`${s}O12`), f(`${s}O4`), f(`${s}O5`), f(`${s}O10`), f(`${s}O11`), f(`${s}O9`),
+        join, renewal, l.held, ov.details || null,
+      ];
+      vals.forEach((v, c) => { const cell = paySheet.getCell(row, c + 1); cell.value = v; cell.border = BOX; cell.font = font(); });
+      paySheet.getCell(row, 1).alignment = { horizontal: 'right' };
+      paySheet.getCell(row, 10).alignment = { horizontal: 'center' };
+      for (const c of [7, 10]) paySheet.getCell(row, c).numFmt = MONEY;
+      paySheet.getCell(row, 17).numFmt = XL_DATE; paySheet.getCell(row, 18).numFmt = XL_DATE;
+      if (l.mismatch) paySheet.getCell(row, 10).note = 'Payable edited in Payroll Review (app value).';
+      if (l.other) paySheet.getCell(row, 6).note = 'Other deductions entered in the app.';
+    });
+
+    for (const [col, w] of Object.entries({ A: 8, B: 20, C: 13, D: 18, E: 22, F: 18, G: 12, H: 9, I: 8, J: 15, K: 17, L: 11, M: 12, N: 12, O: 24, P: 13, Q: 13, R: 15, S: 11, T: 32 })) paySheet.getColumn(col).width = w;
+
+    // ---------------------------------------------------------------- email summary (cards, two columns)
+    let rowL = 1; let rowR = 1;
+    lines.forEach((l, i) => {
+      const p = i + 2; const ps = `'Payment Sheet'!`;
+      const e = l.r.employee;
+      const mail = e.email || e.personalEmail || '';
+      const card: [string, any, boolean?][] = [[e.firstName || e.name, mail], ['Monthly Payment', f(`${ps}D${p}`, l.eff.grossSalary)], ['Total Payable Amt For Current Month', f(`${ps}J${p}`, l.eff.payableAmount)], ['Leave Deduction', f(`${ps}G${p}`, l.eff.leaveDeductionAmount), true]];
+      if (e.joiningDate && e.joiningDate.getUTCFullYear() === run.year && e.joiningDate.getUTCMonth() + 1 === run.month) card.push(['Joining Date', e.joiningDate]);
+      if (l.deposit > 0) { card.push(['Security deposit deduction for 1st month', f(`${ps}E${p}`, l.deposit)]); card.push(['Deposit with company', f(`${ps}S${p}`, l.held)]); }
+      card.push(['Professional TAX', l.eff.ptax > 0 ? f(`${ps}I${p}`, l.eff.ptax) : 'No']);
+      const [ca, cb] = i % 2 === 0 ? ['A', 'B'] : ['D', 'E'];
+      const start = i % 2 === 0 ? rowL : rowR;
+      card.forEach(([k, v, white], j) => {
+        const a = emailSheet.getCell(`${ca}${start + j}`); const b = emailSheet.getCell(`${cb}${start + j}`);
+        a.value = k; b.value = v; a.border = BOX; b.border = BOX; a.font = font(); b.font = font();
+        if (white) a.fill = solid('FFFFFFFF');
+        if (j === 0 && mail) { b.value = { text: mail, hyperlink: `mailto:${mail}` } as any; b.font = font({ color: { argb: 'FF0563C1' }, underline: true }); }
+        else if (k === 'Joining Date') b.numFmt = XL_DATE;
+        else if (j > 0) b.numFmt = MONEY;
+      });
+      if (i % 2 === 0) rowL = start + card.length + 1; else rowR = start + card.length + 1;
+    });
+    for (const [col, w] of Object.entries({ A: 36, B: 22, C: 4, D: 36, E: 24.5 })) emailSheet.getColumn(col).width = w;
+
+    // ---------------------------------------------------------------- Manual Review + Calculation Trace (kept at the end)
     const reviewSheet = wb.addWorksheet('Manual Review');
-    reviewSheet.addRow(['Status','Type','Employee ID','Employee','Description','Resolution','Penalty','Double Deduction Leave','Created At','Resolved At']);
-    for (const r of reviews) reviewSheet.addRow([r.status,r.type,r.employee?.employeeCode ?? '',r.employee?.name ?? '',r.description,r.resolution ?? '',Number(r.penaltyAmount ?? 0),r.doubleDeductionLeave,r.createdAt,r.resolvedAt ?? '']);
+    // V1.9 (STWI 1 Oct): read-only reviews with the fix to make in Zoho
+    reviewSheet.addRow(['Type', 'Employee ID', 'Employee', 'Description', 'How to fix in Zoho', 'Blocks Calculate', 'Created At']);
+    for (const r of reviews) reviewSheet.addRow([r.type, r.employee?.employeeCode ?? '', r.employee?.name ?? '', stwiText(r.description), reviewSolution(String(r.type), r.description), r.description.startsWith(LEAVER_REVIEW_PREFIX) ? 'No (information)' : 'Yes', r.createdAt]);
     this.styleHeader(reviewSheet, 1);
-    reviewSheet.getColumn(9).numFmt = XL_DATETIME; reviewSheet.getColumn(10).numFmt = XL_DATETIME;
+    reviewSheet.getColumn(4).width = 80; reviewSheet.getColumn(5).width = 60; reviewSheet.getColumn(7).numFmt = XL_DATETIME;
 
     const traceSheet = wb.addWorksheet('Calculation Trace');
-    traceSheet.addRow(['Employee ID','Employee','Gross Salary','Daily Salary','Leave Used','Paid Leave','Excess Leave','Late Marks','Late Leave','Double Deduction','Total Deduction Leave','Attendance Deduction','Penalty','P.Tax','Security Deposit','Other Deduction','Payable']);
-    for (const r of payroll) {
-      const trace = (r.ruleSnapshot as any)?.calculationTrace || {};
-      traceSheet.addRow([r.employee.employeeCode,r.employee.name,Number(r.grossSalary),Number(trace.dailySalary || Number(r.grossSalary)/Math.max(1, Number(r.calendarDays))),Number(trace.leaveUsed || r.stwiLeaveDays),Number(trace.paidLeaveAllowance || r.paidLeaveAllowance),Number(trace.excessLeaveDeduction || r.excessLeaveDeduction),r.lateMarks,Number(trace.lateLeaveDeduction || r.lateLeaveDeduction),Number(trace.doubleDeductionLeave || r.doubleDeductionLeave),Number(trace.totalDeductionLeave || (Number(r.lateLeaveDeduction)+Number(r.excessLeaveDeduction)+Number(r.doubleDeductionLeave))),Number(trace.attendanceDeduction || 0),Number(r.penalty),Number(r.ptax),Number(r.securityDeposit),Number(r.otherDeductions),Number(r.payableAmount)]);
+    traceSheet.addRow(['Employee ID', 'Employee', 'Gross Salary', 'Daily Salary', 'Leave Used', 'Paid Leave', 'Excess Leave', 'Late Marks', 'Late Leave', 'Double Deduction', 'Days Before Joining', 'Total Deduction Leave', 'Attendance Deduction', 'Penalty', 'P.Tax', 'Security Deposit', 'Other Deductions', 'Payable']);
+    for (const l of lines) {
+      const b = baseFromResult(l.r);
+      traceSheet.addRow([l.r.employee.employeeCode, l.r.employee.name, l.eff.grossSalary, l.eff.dailySalary, b.leaveUsed, l.eff.paidLeaveAllowance, l.eff.excessLeaveDeduction, l.eff.lateMarks, l.eff.lateLeaveDeduction, l.eff.doubleDeductionLeave, b.notEmployedDays ?? 0, l.eff.deductionLeave, l.eff.leaveDeductionAmount, l.eff.penalty, l.eff.ptax, l.deposit, l.other, l.eff.payableAmount]);
     }
     this.styleHeader(traceSheet, 1);
-    for (const cell of ['C','D','L','M','N','O','P','Q']) traceSheet.getColumn(cell).numFmt = '₹#,##0.00';
+    for (const cell of ['C', 'D', 'M', 'N', 'O', 'P', 'Q', 'R']) traceSheet.getColumn(cell).numFmt = MONEY;
 
-    const byEmp = new Map<string, any[]>();
-    for (const r of attendance) { const code = r.employee.employeeCode; if (!byEmp.has(code)) byEmp.set(code, []); byEmp.get(code)!.push(r); }
-    for (const [code, rows] of byEmp) {
-      // Excel sheet names cannot contain / \ ? * [ ] : (IDs like 2026/sep/06)
-      const ws = wb.addWorksheet(code.replace(/[\\/?*[\]:]/g, '-').slice(0, 31));
-      ws.addRow(['Date','First Check-In','Last Check-Out','Worked Hours','Source Status','Status','Late','Late Minutes','Leave Fraction','Holiday','Week Off','Check-in Notes','Check-out Notes']);
-      for (const r of rows) ws.addRow([r.workDate, r.firstCheckIn ?? '', r.lastCheckOut ?? '', r.workedHours == null ? '' : Number(r.workedHours), r.sourceStatus ?? '', r.status, r.isLate, r.lateMinutes, r.leaveFraction == null ? '' : Number(r.leaveFraction), r.isHoliday, r.isWeekOff, r.checkInNotes ?? '', r.checkOutNotes ?? '']);
-      this.styleHeader(ws, 1); ws.getColumn(1).numFmt = XL_DATE; ws.getColumn(2).numFmt = XL_TIME; ws.getColumn(3).numFmt = XL_TIME;
-    }
-    const buffer = await wb.xlsx.writeBuffer();
-    return Buffer.from(buffer);
+    // print: landscape, one page wide
+    wb.worksheets.forEach((w) => { w.pageSetup = { ...w.pageSetup, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 }; });
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const fileName = `${draft ? 'DRAFT - ' : ''}Attendance & Payment_${MONTHS[run.month - 1]}_${run.year}.xlsx`;
+    return { buffer, fileName };
   }
 
   private styleHeader(ws: ExcelJS.Worksheet, row: number) { const r = ws.getRow(row); r.font = { bold: true }; r.alignment = { vertical: 'middle' }; r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1F4E78' } }; c.font = { color: { argb: 'FFFFFF' }, bold: true }; }); ws.views = [{ state: 'frozen', ySplit: 1 }]; ws.columns.forEach(c => { c.width = Math.min(Math.max((c.header?.toString().length || 12) + 3, 12), 32); }); }

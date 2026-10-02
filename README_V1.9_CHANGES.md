@@ -187,3 +187,22 @@ npm run build
 npm run start:dev
 ```
 Frontend: `cd frontend`, `npm run dev`.
+
+## 8. V1.9 part 4 (2 Oct): STWI half day uses Zoho Total Hours
+- An STWI half-day leave (First Half or Second Half) is a normal half day (0.5 leave) when Zoho **Total Hours ≥ 4:00**. Under 4:00 it goes to Manual Review.
+- Zoho already takes the **Total paid break** (lunch) out of Total Hours. Example: 01 Sep, 09:30–18:30 = 9:00 − 0:41 break = 8:19. So the app does **not** take the break off again.
+- The fixed 12:30–13:30 clock check and the "no lunch taken" note exception are removed. Example: 18 Sep, 09:30–13:34, Total 04:04, break 00:00 → normal half day.
+- Review text: "STWI half day: only 03:50 worked (Zoho Total Hours, paid break 00:45 already taken out; needs 04:00)".
+- Fix text: correct the check-in / check-out in Zoho (Regularize) so Total Hours (after the paid break) is 4:00 or more.
+- The minimum is the "half day minimum hours" rule (4:00).
+- The attendance table has a new **Paid Break** column.
+- No database change. Upload open months again so the reviews are rebuilt.
+
+## 9. V1.9 part 5 (2 Oct): "Regularized" = day approved in Zoho
+- **"Regularized" or "Regularised"** anywhere in the Zoho Status column (any case) means the day was approved in Zoho.
+  - Working day: **full present day**. No leave, no Manual Review, no late mark, whatever the hours. This also covers a missing check-in/check-out and "Absent / Regularized".
+  - With STWI half-day leave ("STWI Leave-(First/Second Half) … / Regularized"): **0.5 half day**, no review, no late mark. A full-day STWI Leave stays 1 day of leave.
+- **Notes**: a check-in or check-out note on a regularized day does **not** go to Manual Review. The attendance table shows the note with "· Regularized – note accepted".
+  - Notes on days that are not regularized still go to Manual Review, as before.
+- Regularized days are present days, so they break a sandwich.
+- No database change. Upload open months again.

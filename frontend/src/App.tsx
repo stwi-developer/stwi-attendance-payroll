@@ -210,7 +210,7 @@ function RunDetail(){
         <button onClick={()=>void addManual()}>{L('run.btn.addManual')}</button>
       </div>
       {/* V1.9: Zoho columns (green in the Zoho file) + notes, in an Excel-style grid */}
-      {attendance===undefined?<LoadingBlock/>:attendance?.data.length?<div className="xl-wrap"><table className="xl-grid"><thead><tr><th className="xl-rn">#</th><th>Date</th><th>Employee</th><th>Check-in</th><th>Check-out</th><th>Total Hours</th><th>Status</th><th>Check-in Notes</th><th>Check-out Notes</th><th>Late</th><th>Leave</th>{run.status!=='FINALIZED'&&<th>Actions</th>}</tr></thead><tbody>
+      {attendance===undefined?<LoadingBlock/>:attendance?.data.length?<div className="xl-wrap"><table className="xl-grid"><thead><tr><th className="xl-rn">#</th><th>Date</th><th>Employee</th><th>Check-in</th><th>Check-out</th><th>Total Hours</th><th title="Zoho Total paid break (lunch). Already taken out of Total Hours.">Paid Break</th><th>Status</th><th>Check-in Notes</th><th>Check-out Notes</th><th>Late</th><th>Leave</th>{run.status!=='FINALIZED'&&<th>Actions</th>}</tr></thead><tbody>
         {attendance.data.map((a,i)=><tr key={a.id} className={a.isSandwich?'xl-leave':a.isWeekOff?'xl-weekend':a.isHoliday?'xl-holiday':a.status==='MANUAL_REVIEW'?'xl-review':Number(a.leaveFraction||0)>=1?'xl-leave':Number(a.leaveFraction||0)>0?'xl-half':''}>
           <td className="xl-rn">{(attendance.pagination.page-1)*attendance.pagination.pageSize+i+1}</td>
           <td className="nowrap">{fmtDate(a.workDate)}</td>
@@ -218,7 +218,8 @@ function RunDetail(){
           <td className="nowrap">{formatTime(a.firstCheckIn)}</td>
           <td className="nowrap">{formatTime(a.lastCheckOut)}</td>
           <td className="num">{fmtHours(a.workedHours)}</td>
-          <td className="xl-status" title={`System status: ${a.status}`}>{a.sourceStatus||a.status}{a.isSandwich&&<> · <b>{L('att.sandwich')}</b></>}</td>
+          <td className="num">{(a.sourceJson as any)?.paidBreak??''}</td>
+          <td className="xl-status" title={`System status: ${a.status}`}>{a.sourceStatus||a.status}{a.isSandwich&&<> · <b>{L('att.sandwich')}</b></>}{(a.checkInNotes?.trim()||a.checkOutNotes?.trim())&&/regulari[sz]ed/i.test(a.sourceStatus||'')&&<> · <b className="ok-text">{L('att.regNote')}</b></>}</td>
           <td className="xl-note" title={a.checkInNotes||''}>{a.checkInNotes||''}</td>
           <td className="xl-note" title={a.checkOutNotes||''}>{a.checkOutNotes||''}</td>
           <td className={a.isLate?'xl-late':''}>{a.isLate?`Yes${a.lateMinutes?` (${a.lateMinutes}m)`:''}`:''}</td>

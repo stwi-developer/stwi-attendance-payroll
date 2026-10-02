@@ -349,3 +349,5 @@ table.xl-grid{border-collapse:collapse;font-size:12px;width:100%;table-layout:au
 .review-banner strong{display:block;margin-bottom:4px}
 .review-table td.review-fix{background:var(--stwi-yellow-soft);font-weight:600}
 .review-table tr.review-info td{color:var(--muted, #667)}
+
+.ok-text{color:#1e7b34}

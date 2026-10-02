@@ -300,16 +300,17 @@ export type AttendanceDecision = {
   noteText: string;
 };
 
+/** V1.9 (2 Oct): Zoho status says the day was regularized (approved). */
+export function isRegularized(status: string | null | undefined) {
+  return /regulari[sz]ed/i.test(status ?? '');
+}
+
 /** V1.9 notes rule: start of the review text when the day has only a note */
 export const NOTE_REVIEW_PREFIX = 'Note written in Zoho';
 
-const LUNCH_START = 12 * 60 + 30;
-const LUNCH_END = 13 * 60 + 30;
-/** check-out notes like "no lunch taken", "lunch not taken", "lunch skipped", "without lunch" */
-const NO_LUNCH_NOTE = /\b(no|not|skip\w*|without)\s*(taken\s*)?lunch|\blunch\s*(not|skip\w*|was not)/i;
 
 export function classifyAttendanceRow(
-  row: { status: string; totalHours: number | null; firstCheckIn: Date | null; firstCheckInMinutes: number | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkInNotes?: string | null; checkOutNotes?: string | null },
+  row: { status: string; totalHours: number | null; firstCheckIn: Date | null; firstCheckInMinutes: number | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkInNotes?: string | null; checkOutNotes?: string | null; paidBreakHours?: number | null },
   workDate: Date,
   cfg: { minHalf: number; maxHalf: number; fullDayHours: number },
 ): AttendanceDecision {
@@ -344,7 +345,8 @@ export function classifyAttendanceRow(
   const notes: string[] = [];
   if (hasText(row.checkInNotes)) notes.push(`Check-in note: "${row.checkInNotes!.trim().slice(0, 200)}"`);
   if (hasText(row.checkOutNotes)) notes.push(`Check-out note: "${row.checkOutNotes!.trim().slice(0, 200)}"`);
-  if (notes.length) {
+  // V1.9 (STWI 2 Oct): a regularized day was approved in Zoho, so its notes are accepted.
+  if (notes.length && !isRegularized(row.status)) {
     d.noteText = ` ${notes.join('; ')}.`;
     d.status = 'MANUAL_REVIEW';
     if (!d.reviewType) {
@@ -357,7 +359,7 @@ export function classifyAttendanceRow(
 
 function classifyDay(
   d: AttendanceDecision,
-  row: { status: string; firstCheckIn: Date | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkOutNotes?: string | null },
+  row: { status: string; firstCheckIn: Date | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkOutNotes?: string | null; paidBreakHours?: number | null },
   workDate: Date,
   cfg: { minHalf: number; maxHalf: number; fullDayHours: number },
   x: { holiday: boolean; weekend: boolean; normalized: string; shortHoursAction: string; classification: ReturnType<typeof leaveClassification>; hours: number | null; hasCheckIn: boolean; firstMin: number | null },
@@ -365,6 +367,23 @@ function classifyDay(
   const { holiday, weekend, normalized, shortHoursAction, classification, hours, hasCheckIn, firstMin } = x;
   // Weekends and holidays: no leave, no late mark, no review.
   if (holiday || weekend) return;
+
+  // V1.9 (STWI 2 Oct): "Regularized" / "Regularised" anywhere in the Zoho status
+  // = HR approved the day in Zoho: a full present day (no leave, no review, no
+  // late mark) whatever the hours. With STWI half-day leave it is a 0.5 half
+  // day; with full-day STWI leave it stays 1 day of leave.
+  if (isRegularized(row.status)) {
+    const s = row.status.toLowerCase();
+    if (/stwi\s*leave/.test(s)) {
+      const half = /(first|second)\s*half|half\s*-?\s*day|0\.5\s*day/.test(s);
+      d.status = half ? 'HALF_DAY' : 'STWI_LEAVE';
+      d.leaveFraction = half ? 0.5 : 1;
+      d.leaveType = half ? 'HALF_DAY' : 'FULL_DAY';
+    } else {
+      d.status = 'PRESENT';
+    }
+    return;
+  }
 
   // Q2 + Q3 + Q5a: explicit Zoho "Absent".
   if (normalized === 'absent') {
@@ -409,20 +428,20 @@ function classifyDay(
       const halfDayCase = ['half_day', 'first_half', 'second_half'].includes(classification.type);
       const required = halfDayCase ? cfg.minHalf : cfg.fullDayHours;
       const lastMin = row.lastCheckOutMinutes ?? timeMinutes(row.lastCheckOut);
-      if (halfDayCase && /stwi\s*leave/i.test(row.status) && firstMin != null && lastMin != null) {
-        // V1.9 (STWI 28 Sep): lunch 12:30-13:30 is compulsory. On an STWI half-day
-        // leave the lunch hour inside check-in..check-out is taken off, unless the
-        // check-out note says no lunch was taken. 4:00 or more is needed.
-        const span = Math.max(0, lastMin - firstMin);
-        const lunch = Math.max(0, Math.min(lastMin, LUNCH_END) - Math.max(firstMin, LUNCH_START));
-        const noLunch = NO_LUNCH_NOTE.test(row.checkOutNotes ?? '');
-        const worked = Math.round(span - (noLunch ? 0 : lunch));
+      if (halfDayCase && /stwi\s*leave/i.test(row.status)) {
+        // V1.9 (STWI 2 Oct): an STWI half day needs 4:00 of Zoho "Total Hours".
+        // Zoho has already taken the paid break (lunch) out of Total Hours, so
+        // nothing is taken off again and the 12:30-13:30 clock check is gone.
+        // Only if Total Hours is missing are check-in..check-out minus the paid
+        // break used instead.
+        const breakMin = Math.round((row.paidBreakHours ?? 0) * 60);
+        const worked = hours != null
+          ? Math.round(hours * 60)
+          : firstMin != null && lastMin != null ? Math.max(0, lastMin - firstMin - breakMin) : 0;
         if (worked < Math.round(required * 60)) {
           d.status = 'MANUAL_REVIEW';
           d.reviewType = 'UNEXPECTED_DURATION';
-          d.reviewReason = lunch > 0 && !noLunch
-            ? `STWI half day: ${formatHours(worked / 60)} after the 12:30-13:30 lunch hour (needs ${formatHours(required)})`
-            : `STWI half day: only ${formatHours(worked / 60)} worked (needs ${formatHours(required)})`;
+          d.reviewReason = `STWI half day: only ${formatHours(worked / 60)} worked (Zoho Total Hours, paid break ${formatHours(breakMin / 60)} already taken out; needs ${formatHours(required)})`;
         }
       } else if (hours != null && hours < required) {
         d.status = 'MANUAL_REVIEW';
@@ -488,7 +507,7 @@ export function reviewSolution(type: string, description: string): string {
       break;
     case 'UNEXPECTED_DURATION':
       if (d.startsWith('Zoho half-day under')) fix = 'Regularize (it then shows "/ Regularized" = whole day) or apply half-day leave in Zoho.';
-      else if (d.startsWith('STWI half day')) fix = 'Correct the check-in / check-out in Zoho (Regularize) so the half day has 4:00 after the 12:30-13:30 lunch hour.';
+      else if (d.startsWith('STWI half day')) fix = 'Correct the check-in / check-out in Zoho (Regularize) so Total Hours (after the paid break) is 4:00 or more.';
       else fix = 'Regularize the day or apply STWI half-day leave in Zoho.';
       break;
     case 'AMBIGUOUS_LEAVE': fix = 'Correct the leave type in Zoho.'; break;
@@ -1168,6 +1187,9 @@ const totalHoursIdx = findCol(headers, [
   totalHours: totalHoursIdx >= 0
     ? hoursToDecimal(r[totalHoursIdx])
     : null,
+
+  // V1.9 (2 Oct): Zoho "Total paid break" (lunch etc.), already out of Total Hours
+  paidBreakHours: extraCols.paidBreak >= 0 ? hoursToDecimal(r[extraCols.paidBreak]) : null,
 
   // Payable Hours is retained separately.
   payableHours: payableHoursIdx >= 0

@@ -140,6 +140,7 @@ export const DEFAULT_LABELS: Record<string, LabelDef> = {
   'rev.leave.0': { group: 'Monthly run', text: '0 (present)' },
   'rev.leave.half': { group: 'Monthly run', text: '0.5 (half day)' },
   'rev.leave.1': { group: 'Monthly run', text: '1 (full day)' },
+  'att.regNote': { group: 'Monthly run', text: 'Regularized – note accepted' },
   'att.sandwich': { group: 'Monthly run', text: 'Sandwich leave' },
 
   // ---- settings ----

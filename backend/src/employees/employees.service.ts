@@ -150,6 +150,7 @@ export class EmployeesService {
     if (existing) {
       throw new FieldErrors({ employeeCode: existing.deletedAt ? `Employee ID ${employeeCode} belonged to ${existing.name}, who was deleted. Use another ID.` : `Employee ID ${employeeCode} already exists (${existing.name}).` });
     }
+    await this.duplicateErrors(tx, data);
     const grossSalary = Number(data.grossSalary);
     const initialDeposit = Number(data.securityDepositAlreadyTaken ?? 0);
     if (initialDeposit > grossSalary) throw new FieldErrors({ securityDepositAlreadyTaken: 'Security deposit already taken cannot be more than the gross salary.' });
@@ -188,6 +189,7 @@ export class EmployeesService {
     if (Object.keys(errors).length) throw new FieldErrors(errors);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await this.duplicateErrors(tx, data, id);
       const masters = await this.resolveMasters(tx, data, { createDepartments: false });
       const cols = this.employeeColumns(data);
       const firstName = data.firstName ?? existing.firstName;
@@ -348,6 +350,9 @@ export class EmployeesService {
     });
     if (!employee || employee.deletedAt) throw new NotFoundException('Employee not found');
     if (employee.status !== 'INACTIVE') throw new BadRequestException('Deactivate the employee before deleting.');
+    // KP-42 (STWI 21 Oct): no delete while a security deposit is still held
+    const held = await this.heldAmount(id);
+    if (held > 0) throw new BadRequestException(`A security deposit of ₹${held.toLocaleString('en-IN')} is still held. Settle it before deleting the employee.`);
     if (String(body?.confirmCode ?? '').trim() !== employee.employeeCode) throw new BadRequestException(`Type the Employee ID ${employee.employeeCode} to confirm.`);
     const exported = await this.prisma.auditLog.findFirst({ where: { employeeId: id, action: 'EXPORT', createdAt: { gte: new Date(Date.now() - 24 * 3600 * 1000) } } });
     if (!exported) throw new BadRequestException('Export the employee information first (within the last 24 hours).');
@@ -371,12 +376,29 @@ export class EmployeesService {
   }
 
   // ------------------------------------------------------------------ helpers
-  /** Security deposit currently held = held before the latest deposit plan + what that plan has collected. */
+  /**
+   * Security deposit currently held. KP-03 (STWI 21 Oct): same figure as payroll
+   * (Finalize already adds each instalment into "alreadyHeld", so it must not be
+   * added again): max(held on the latest plan, all instalments collected).
+   */
   async heldAmount(employeeId: string) {
-    const latest = await this.prisma.securityDeposit.findFirst({ where: { employeeId }, orderBy: { createdAt: 'desc' }, include: { transactions: true } });
-    if (!latest) return 0;
-    const collected = latest.transactions.reduce((s, t) => s + Number(t.amount), 0);
-    return Math.round((Number(latest.alreadyHeld) + collected) * 100) / 100;
+    const latest = await this.prisma.securityDeposit.findFirst({ where: { employeeId }, orderBy: { createdAt: 'desc' } });
+    const all = await this.prisma.securityDepositTransaction.aggregate({ where: { employeeId }, _sum: { amount: true } });
+    const held = Math.max(Number(latest?.alreadyHeld ?? 0), Number(all._sum.amount ?? 0));
+    return Math.round(held * 100) / 100;
+  }
+
+  /** KP-31 (STWI 21 Oct): PAN, Aadhaar and office email must be unique (saving is blocked). */
+  private async duplicateErrors(tx: Tx | PrismaService, data: Record<string, any>, excludeId?: string) {
+    const errors: Record<string, string> = {};
+    const checks: [string, string][] = [['pan', 'PAN'], ['aadhaar', 'Aadhaar'], ['email', 'Email address']];
+    for (const [key, label] of checks) {
+      const v = data[key];
+      if (v === undefined || v === null || String(v).trim() === '') continue;
+      const other = await (tx as any).employee.findFirst({ where: { [key]: key === 'email' ? String(v).toLowerCase() : v, deletedAt: null, ...(excludeId ? { id: { not: excludeId } } : {}) }, select: { name: true, employeeCode: true } });
+      if (other) errors[key] = `${label} ${v} is already used by ${other.name} (${other.employeeCode}).`;
+    }
+    if (Object.keys(errors).length) throw new FieldErrors(errors);
   }
 
   /** Copy with Aadhaar / PAN / bank account masked (list screens, Junior HR). */

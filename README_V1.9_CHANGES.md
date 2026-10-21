@@ -206,3 +206,59 @@ Frontend: `cd frontend`, `npm run dev`.
   - Notes on days that are not regularized still go to Manual Review, as before.
 - Regularized days are present days, so they break a sandwich.
 - No database change. Upload open months again.
+
+## 10. V1.9 part 6 (21 Oct): Known problems fixed (STWI decisions of 21 Oct)
+The decisions are listed in the project doc `known-problems-decisions-2026-10-21.md`.
+
+**Attendance**
+- **KP-02** Days before the joining date and after the exit date are not asked about. There is no "No attendance record" review and no filler row.
+- **KP-16** A Present day with a check-in but no check-out goes to Manual Review ("Checked in but no check-out"). So does a Present day with Zoho Total Hours empty ("Total Hours missing in Zoho").
+- **KP-17 / KP-18** STWI First Half / Second Half is always a half day (0.5).
+  - Total Hours empty → Manual Review.
+  - Under 4:00 → Manual Review.
+  - Above 5:30 → normal half day.
+  - First-half days are late after the first-half login time.
+- **KP-20** Known working-day statuses:
+  - Present
+  - Absent
+  - STWI Leave (full / half)
+  - "0.5 day Present, 0.5 day Absent"
+  - anything with Regularized
+  - Holiday
+  
+  Anything else, including an empty status or "Weekend" on a working Saturday, goes to Manual Review with its own fix text.
+- **KP-19** A day with an open Manual Review item always breaks a sandwich.
+- **KP-24** Editing an attendance row only changes the fields that are sent.
+
+**Month run**
+- **KP-01** The leaver "Last month" information item does not block Finalize.
+- **KP-14** A failed Process no longer leaves the month in PROCESSING.
+- **KP-15** Calculate is refused while files uploaded after the last Process are not processed.
+- **KP-41** Calculate removes payroll rows of employees no longer in the month.
+- **KP-29** The dashboard Open Reviews card counts only blocking items.
+
+**Payroll and deposit**
+- **KP-03** "Deposit Held" on the employee page = the payroll figure (no double count).
+- **KP-04** The last EMI instalment clears the rest. Amounts under ₹1 are ignored, so there is no 0.01 top-up.
+- **KP-06** The Finalize deposit message shows the name and Employee ID.
+- **KP-07** Only the latest finalized month can be reopened. Reopen undoes that month's deposit instalments; the next Finalize records them again.
+- **KP-08** Deleting a file keeps the payroll row and its edits.
+- **KP-09** Clear Edits also resets other deduction (to 0) and the deposit (to the chosen method).
+- **KP-10** A typed payable gets a warning in the editor and a "· payable typed" badge.
+- **KP-11** An edited gross recalculates P.Tax. The deposit target stays on the salary history.
+
+**Rules (KP-12)**
+- Settings > Rules: HR picks the month a change starts from. Older months keep the old value, and finalized months cannot be changed.
+- History is shown per rule.
+- The late times (09:30 / 14:30) now come from Settings.
+- `double_deduction_leave_days` is removed by migration `20261021100000_v1_9_rules_by_month`.
+
+**Employees, Excel, filters**
+- **KP-31** A duplicate PAN, Aadhaar or office email blocks saving (Add, Edit, Zoho import create). Existing duplicates in the live data must be fixed before those employees can be edited.
+- **KP-32** Total Experience is ignored when comparing with Zoho.
+- **KP-42** An employee cannot be deleted while a security deposit is held.
+- **KP-26** Excel formulas use the edited half-day count and per-day salary.
+- **KP-28** The email summary says "Security deposit deduction for this month".
+- **KP-40** The "No leave" filters are fixed.
+
+**Release:** Render applies the migration. Upload the open month again so the new attendance rules apply.

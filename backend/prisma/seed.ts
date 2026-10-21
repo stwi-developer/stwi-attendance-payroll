@@ -33,7 +33,6 @@ async function main() {
     ['full_day_min_hours', '8', 'Working-day hours (Zoho Total Hours). A working day under this goes to Manual Review (V1.7).'],
     ['half_day_min_hours', '4', 'Minimum worked hours for half-day STWI leave.'],
     ['half_day_max_hours', '5.5', 'Upper legacy boundary; values outside the configured range go to review.'],
-    ['double_deduction_leave_days', '1', 'Manual-review tick creates one additional deduction day.'],
   ];
   for (const [key, value, description] of rules) {
     const existing = await prisma.ruleDefinition.findFirst({ where: { key, effectiveTo: null }, orderBy: { effectiveFrom: 'desc' } });

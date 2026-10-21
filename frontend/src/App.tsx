@@ -30,6 +30,9 @@ function ReviewTable({rows}:{rows:Review[]}){
   </tr>)}</tbody></table>;
 }
 
+// KP-10 (STWI 21 Oct): a payable typed by hand never changes again by itself
+const payableTyped=(r:any)=>{const v=r?.ruleSnapshot?.manualOverrides?.payableAmount;return v!==undefined&&v!==null&&v!==''};
+
 // V1.9: errors are shown as popups. setError(msg) opens the popup; ErrorBox is kept so old screens need no change.
 function useErrorPopup(){const set=(m:string)=>{if(m)void dialog.error(m)};return ['',set] as const}
 function ErrorBox(_:{message:string}){return null}
@@ -419,7 +422,7 @@ function RunDetail(){
         const setD=(key:string,value:any)=>setPayrollDrafts(prev=>({...prev,[r.id]:{...d,[key]:value}}));
         return <>
           <tr key={r.id}>
-            <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}{r.manuallyEdited?' · edited':''}</small></td>
+            <td><strong>{r.employee.name}</strong><small>{r.employee.employeeCode}{r.manuallyEdited?' · edited':''}{payableTyped(r)&&<b className="typed-badge" title={L('run.payableTyped.hint')}> · {L('run.payableTyped.badge')}</b>}</small></td>
             <td>{Number(d.workingDays)}</td>
             <td>{currency(d.monthlyPayment)}</td>
             <td>{currency(d.perDay)}</td>
@@ -446,6 +449,7 @@ function RunDetail(){
             </td>
           </tr>
           {editing&&<tr key={`${r.id}-edit`}><td colSpan={21}>
+            {(payableTyped(r)||String(d.payableAmount??'')!==String(payrollDraft({...r,__fresh:true}).payableAmount??''))&&<div className="notice warn">{L('run.payableTyped.warning')}</div>}
             <div className="payroll-editor">
               <label>Working Days<input type="number" step="0.01" value={d.workingDays} onChange={e=>setD('workingDays',e.target.value)}/></label>
               <label>Monthly Payment<input type="number" step="0.01" value={d.monthlyPayment} onChange={e=>setD('monthlyPayment',e.target.value)}/></label>
@@ -509,9 +513,15 @@ function Reviews(){const[runs,setRuns]=useState<Page<Run>>();const[runId,setRunI
 function Settings({user,onLabelsChanged}:{user:User;onLabelsChanged:()=>void}){const[rules,setRules]=useState<any[]>([]);const[search,setSearch]=useState('');const[tab,setTab]=useState<'rules'|'labels'>('rules');useEffect(()=>{api.rules().then(setRules).catch(e=>dialog.error(errMessage(e)))},[]);
   return <div><div className="page-head"><div><h1>Settings</h1><p>Business rules and the texts used on buttons and popups.</p></div></div>
   <div className="tabs page-tabs"><button className={tab==='rules'?'on':''} onClick={()=>setTab('rules')}>Rules</button><button className={tab==='labels'?'on':''} onClick={()=>setTab('labels')}>Labels &amp; popup texts</button></div>
-  {tab==='rules'?<div className="panel"><div className="filters"><input placeholder="Search rule" value={search} onChange={e=>setSearch(e.target.value)}/></div><table><thead><tr><th>Rule</th><th>Value</th><th>Effective</th><th></th></tr></thead><tbody>{rules.filter(r=>String(r.key).toLowerCase().includes(search.toLowerCase())||String(r.value).toLowerCase().includes(search.toLowerCase())).map(r=><RuleRow key={r.key} rule={r}/>)}</tbody></table></div>
+  {tab==='rules'?<div className="panel"><div className="filters"><input placeholder="Search rule" value={search} onChange={e=>setSearch(e.target.value)}/></div><p className="muted">{L('set.rules.help')}</p><table><thead><tr><th>Rule</th><th>Value this month</th><th>Since</th><th>Change (new value, from month)</th><th>History</th></tr></thead><tbody>{rules.filter(r=>String(r.key).toLowerCase().includes(search.toLowerCase())||String(r.label||'').toLowerCase().includes(search.toLowerCase())||String(r.value).toLowerCase().includes(search.toLowerCase())).map(r=><RuleRow key={r.key+r.value+r.effectiveFrom} rule={r} canEdit={user.role==='CEO'||user.role==='HR'} onSaved={()=>api.rules().then(setRules).catch(()=>{})}/>)}</tbody></table></div>
   :<LabelsEditor canEdit={user.role==='CEO'} onChanged={onLabelsChanged}/>}</div>}
-function RuleRow({rule}:{rule:any}){const[value,setValue]=useState(String(rule.value));return <tr><td>{rule.key}</td><td><input value={value} onChange={e=>setValue(e.target.value)}/></td><td>{fmtDate(rule.effectiveFrom)}</td><td><button onClick={async()=>{try{await api.updateRule(rule.key,value);await dialog.success(L('set.saved'))}catch(e){await dialog.error(errMessage(e))}}}>{L('set.btn.saveRule')}</button></td></tr>}
+// KP-12 (STWI 21 Oct): a rule change starts from the month HR picks; older months keep the old value
+const thisMonth=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`};
+const monthLabel=(iso?:string|null)=>{if(!iso)return '—';const [y,m]=String(iso).slice(0,7).split('-');return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m)-1]} ${y}`};
+function RuleRow({rule,canEdit,onSaved}:{rule:any;canEdit:boolean;onSaved:()=>void}){const[value,setValue]=useState(String(rule.value));const[from,setFrom]=useState(thisMonth());
+  return <tr><td><strong>{rule.label||rule.key}</strong><small>{rule.key}</small></td><td className="num">{rule.value}</td><td>{monthLabel(rule.effectiveFrom)}</td>
+  <td>{canEdit?<div className="rule-edit"><input aria-label="New value" value={value} placeholder={rule.kind==='time'?'09:30':''} onChange={e=>setValue(e.target.value)}/><label>from <input type="month" value={from} onChange={e=>setFrom(e.target.value)}/></label><button onClick={async()=>{try{await api.updateRule(rule.key,value,from);await dialog.success(L('set.ruleSaved',{month:monthLabel(from)}));onSaved()}catch(e){await dialog.error(errMessage(e))}}}>{L('set.btn.saveRule')}</button></div>:'—'}</td>
+  <td><small>{(rule.versions||[]).map((v:any)=>`${v.value} from ${monthLabel(v.effectiveFrom)}`).join(' · ')}</small></td></tr>}
 
 // V1.9: the CEO changes any button label or popup text here (saved in the database, no deploy)
 function LabelsEditor({canEdit,onChanged}:{canEdit:boolean;onChanged:()=>void}){

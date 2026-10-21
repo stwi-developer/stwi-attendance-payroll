@@ -242,11 +242,13 @@ function DangerZone({ emp, onClose, onDeleted }: { emp: Employee; onClose: () =>
       onDeleted();
     } catch (e) { await dialog.error(errMessage(e)); } finally { setBusy(false); }
   };
-  const canDelete = !!exported && typed.trim() === emp.employeeCode && !busy;
+  const depositHeld = Number(emp.depositHeld || 0) > 0;
+  // KP-42 (STWI 21 Oct): no delete while a security deposit is held
+  const canDelete = !depositHeld && !!exported && typed.trim() === emp.employeeCode && !busy;
   return <Modal tone="danger" title={L('emp.danger.title', { name: emp.name })} onClose={onClose}
     footer={<><button className="btn-secondary" onClick={onClose}>{L('btn.cancel')}</button><button className="btn-danger" disabled={!canDelete} onClick={doDelete}>{L('emp.btn.deleteEmployee')}</button></>}>
     <div className="modal-message">{L('emp.danger.message')}</div>
-    {Number(emp.depositHeld || 0) > 0 && <div className="notice warn">Security deposit still held: <b>{currency(emp.depositHeld)}</b>. Settle it before deleting (refunds come in a later release).</div>}
+    {depositHeld && <div className="notice bad">Security deposit still held: <b>{currency(emp.depositHeld)}</b>. The employee cannot be deleted until it is settled (refunds come in a later release).</div>}
     <div className={`danger-step${exported ? ' done' : ''}`}>
       <b>Step 1.</b> Download the employee's information (profile, salary, deposit, payroll, attendance).
       <div><button className="btn-primary" disabled={busy} onClick={doExport}>{L('emp.btn.export')}</button> {exported && <span className="badge ok">✓ Downloaded {exported}</span>}</div>

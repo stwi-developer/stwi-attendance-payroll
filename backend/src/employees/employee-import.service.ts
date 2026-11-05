@@ -267,7 +267,8 @@ export class EmployeeImportService {
     };
     const out: Diff[] = [];
     for (const f of ZOHO_FIELDS) {
-      if (f.key === 'employeeCode' || isBlank(v[f.key])) continue;
+      // KP-32 (STWI 21 Oct): Total Experience changes every month in Zoho, so it is not compared
+      if (f.key === 'employeeCode' || f.key === 'totalExperience' || isBlank(v[f.key])) continue;
       const to = String(v[f.key]);
       const from = current[f.key] ?? '';
       if (f.key === 'email' ? from.toLowerCase() !== to.toLowerCase() : from !== to) out.push({ field: f.key, label: f.label, from: from || '—', to });

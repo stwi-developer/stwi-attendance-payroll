@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { BLOCKING_REVIEW } from '../runs/runs.service';
 
 @Injectable()
 export class DashboardService {
@@ -10,7 +11,8 @@ export class DashboardService {
     let runStats: any = null;
     if (latestRun) {
       const [reviewsOpen, files, payrollResults] = await Promise.all([
-        this.prisma.manualReview.count({ where: { payrollRunId: latestRun.id, status: 'OPEN' } }),
+        // KP-29: only items that block Calculate (not the leaver information item)
+        this.prisma.manualReview.count({ where: { payrollRunId: latestRun.id, status: 'OPEN', ...BLOCKING_REVIEW } }),
         this.prisma.attendanceFile.count({ where: { payrollRunId: latestRun.id } }),
         this.prisma.payrollResult.count({ where: { payrollRunId: latestRun.id } }),
       ]);
@@ -18,7 +20,7 @@ export class DashboardService {
     }
     // V1.9: "Payroll Results" = number of finalized months (STWI, 28 Sep)
     const finalizedRuns = await this.prisma.payrollRun.count({ where: { status: 'FINALIZED' } });
-    const openReviews = await this.prisma.manualReview.count({ where: { status: 'OPEN' } });
+    const openReviews = await this.prisma.manualReview.count({ where: { status: 'OPEN', ...BLOCKING_REVIEW, payrollRun: { status: { not: 'FINALIZED' } } } });
     return { employees, latestRun: runStats, finalizedRuns, openReviews };
   }
 }

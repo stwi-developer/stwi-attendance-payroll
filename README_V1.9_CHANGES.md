@@ -200,9 +200,84 @@ Frontend: `cd frontend`, `npm run dev`.
 
 ## 9. V1.9 part 5 (2 Oct): "Regularized" = day approved in Zoho
 - **"Regularized" or "Regularised"** anywhere in the Zoho Status column (any case) means the day was approved in Zoho.
-  - Working day: **full present day**. No leave, no Manual Review, no late mark, whatever the hours. This also covers a missing check-in/check-out and "Absent / Regularized".
+  - Working day: **full present day**. No leave, no Manual Review, whatever the hours. (Late mark: see section 12, changed on 5 Nov.) This also covers a missing check-in/check-out and "Absent / Regularized".
   - With STWI half-day leave ("STWI Leave-(First/Second Half) … / Regularized"): **0.5 half day**, no review, no late mark. A full-day STWI Leave stays 1 day of leave.
 - **Notes**: a check-in or check-out note on a regularized day does **not** go to Manual Review. The attendance table shows the note with "· Regularized – note accepted".
   - Notes on days that are not regularized still go to Manual Review, as before.
 - Regularized days are present days, so they break a sandwich.
 - No database change. Upload open months again.
+
+## 10. V1.9 part 6 (21 Oct): Known problems fixed (STWI decisions of 21 Oct)
+The decisions are listed in the project doc `known-problems-decisions-2026-10-21.md`.
+
+**Attendance**
+- **KP-02** Days before the joining date and after the exit date are not asked about. There is no "No attendance record" review and no filler row.
+- **KP-16** A Present day with a check-in but no check-out goes to Manual Review ("Checked in but no check-out"). So does a Present day with Zoho Total Hours empty ("Total Hours missing in Zoho").
+- **KP-17 / KP-18** STWI First Half / Second Half is always a half day (0.5).
+  - Total Hours empty → Manual Review.
+  - Under 4:00 → Manual Review.
+  - Above 5:30 → normal half day.
+  - First-half days are late after the first-half login time.
+- **KP-20** Known working-day statuses:
+  - Present
+  - Absent
+  - STWI Leave (full / half)
+  - "0.5 day Present, 0.5 day Absent"
+  - anything with Regularized
+  - Holiday
+  
+  Anything else, including an empty status or "Weekend" on a working Saturday, goes to Manual Review with its own fix text.
+- **KP-19** A day with an open Manual Review item always breaks a sandwich.
+- **KP-24** Editing an attendance row only changes the fields that are sent.
+
+**Month run**
+- **KP-01** The leaver "Last month" information item does not block Finalize.
+- **KP-14** A failed Process no longer leaves the month in PROCESSING.
+- **KP-15** Calculate is refused while files uploaded after the last Process are not processed.
+- **KP-41** Calculate removes payroll rows of employees no longer in the month.
+- **KP-29** The dashboard Open Reviews card counts only blocking items.
+
+**Payroll and deposit**
+- **KP-03** "Deposit Held" on the employee page = the payroll figure (no double count).
+- **KP-04** The last EMI instalment clears the rest. Amounts under ₹1 are ignored, so there is no 0.01 top-up.
+- **KP-06** The Finalize deposit message shows the name and Employee ID.
+- **KP-07** Only the latest finalized month can be reopened. Reopen undoes that month's deposit instalments; the next Finalize records them again.
+- **KP-08** Deleting a file keeps the payroll row and its edits.
+- **KP-09** Clear Edits also resets other deduction (to 0) and the deposit (to the chosen method).
+- **KP-10** A typed payable gets a warning in the editor and a "· payable typed" badge.
+- **KP-11** An edited gross recalculates P.Tax. The deposit target stays on the salary history.
+
+**Rules (KP-12)**
+- Settings > Rules: HR picks the month a change starts from. Older months keep the old value, and finalized months cannot be changed.
+- History is shown per rule.
+- The late times (09:30 / 14:30) now come from Settings.
+- `double_deduction_leave_days` is removed by migration `20261021100000_v1_9_rules_by_month`.
+
+**Employees, Excel, filters**
+- **KP-31** A duplicate PAN, Aadhaar or office email blocks saving (Add, Edit, Zoho import create). Existing duplicates in the live data must be fixed before those employees can be edited.
+- **KP-32** Total Experience is ignored when comparing with Zoho.
+- **KP-42** An employee cannot be deleted while a security deposit is held.
+- **KP-26** Excel formulas use the edited half-day count and per-day salary.
+- **KP-28** The email summary says "Security deposit deduction for this month".
+- **KP-40** The "No leave" filters are fixed.
+
+**Release:** Render applies the migration. Upload the open month again so the new attendance rules apply.
+
+## 11. V1.9 part 7 (5 Nov): Excel export fixes
+- **Numbers are visible in every viewer.** Every formula in the export is now saved together with its result. Before this change, Excel's Protected View, phone and WhatsApp/Drive previews showed these cells empty until "Enable Editing" was clicked:
+  - employee sheets: Total Working Days, Paid Leave, Leave Deducation, Per Day, Working Day Payment;
+  - Payment Sheet: columns K–P.
+
+  The formulas are unchanged, so editing in Excel still recalculates.
+- **Half Day row (STWI option A).** O4 still shows the leave days of the half days (0.5 each, as in STWI's sheet: 7 half days = 3.5). The label now says "Half Day (leave days)", and P4 shows the number of half days ("7 half days").
+- Both "Export Excel" buttons on the month page call the same export, so they always produce the same workbook for the same data.
+- No database change.
+
+## 12. V1.9 part 8 (5 Nov): a Regularized day keeps its late mark (STWI rule B)
+- Regularizing in Zoho still approves the day: full present day (or 0.5 with STWI half-day leave), no leave, no Manual Review, notes accepted.
+- **New:** the late mark is no longer removed.
+  - Late after the normal login time (Settings, default 09:30).
+  - Late after the first-half login time (default 14:30) when the first half is the leave.
+  - A full-day STWI Leave / Regularized has no late mark.
+- October 2026 example (STWI file): 4 days become late: Aditya 07 Oct (09:35), Aryan 12 Oct (09:57), Dixit 24 Oct (09:40), Falguni 24 Oct (09:43). Nobody reaches 3 late marks, so October pay does not change.
+- Late marks are set when a file is uploaded, so **upload the open month's files again** after updating. No database change.

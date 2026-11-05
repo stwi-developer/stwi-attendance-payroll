@@ -140,6 +140,11 @@ export const DEFAULT_LABELS: Record<string, LabelDef> = {
   'rev.leave.0': { group: 'Monthly run', text: '0 (present)' },
   'rev.leave.half': { group: 'Monthly run', text: '0.5 (half day)' },
   'rev.leave.1': { group: 'Monthly run', text: '1 (full day)' },
+  'run.payableTyped.badge': { group: 'Monthly run', text: 'payable typed' },
+  'run.payableTyped.hint': { group: 'Monthly run', text: 'The payable was typed by hand in Payroll Review.' },
+  'run.payableTyped.warning': { group: 'Monthly run', text: 'The payable is typed by hand: other changes (leave, deposit, other deduction, P.Tax) will NOT change it. Empty the Payable AMT box and save to let the app calculate it again.' },
+  'set.rules.help': { group: 'Settings', text: 'A change starts from the month you pick; months before it keep the old value. Finalized months cannot be changed.' },
+  'set.ruleSaved': { group: 'Settings', text: 'Saved. The new value is used from {month}.' },
   'att.regNote': { group: 'Monthly run', text: 'Regularized – note accepted' },
   'att.sandwich': { group: 'Monthly run', text: 'Sandwich leave' },
 

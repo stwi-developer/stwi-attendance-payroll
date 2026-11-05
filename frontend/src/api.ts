@@ -113,7 +113,7 @@ export const api = {
   departments:()=>request<any[]>('/reference/departments'),
   designations:()=>request<any[]>('/reference/designations'),
   rules:()=>request<any[]>('/reference/rules'),
-  updateRule:(key:string,value:string)=>request<any>(`/reference/rules/${encodeURIComponent(key)}`,{method:'PATCH',body:JSON.stringify({value})}),
+  updateRule:(key:string,value:string,fromMonth?:string)=>request<any>(`/reference/rules/${encodeURIComponent(key)}`,{method:'PATCH',body:JSON.stringify({value,fromMonth})}),
 
   runs:(params:Record<string,unknown>={})=>request<Page<Run>>(`/runs${query(params)}`),
   createRun:(year:number,month:number)=>request<Run>('/runs',{method:'POST',body:JSON.stringify({year,month})}),

@@ -351,3 +351,9 @@ table.xl-grid{border-collapse:collapse;font-size:12px;width:100%;table-layout:au
 .review-table tr.review-info td{color:var(--muted, #667)}
 
 .ok-text{color:#1e7b34}
+
+/* V1.9 (21 Oct) */
+.typed-badge{color:#b00020}
+.rule-edit{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.rule-edit input{width:90px}
+.rule-edit input[type=month]{width:150px}

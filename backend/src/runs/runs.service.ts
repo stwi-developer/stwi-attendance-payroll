@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { ruleVersionFor } from '../rules';
 import * as XLSX from 'xlsx';
 import * as ExcelJS from 'exceljs';
 import { codeKey } from '../utils/employee-code';
@@ -312,8 +313,9 @@ export const NOTE_REVIEW_PREFIX = 'Note written in Zoho';
 export function classifyAttendanceRow(
   row: { status: string; totalHours: number | null; firstCheckIn: Date | null; firstCheckInMinutes: number | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkInNotes?: string | null; checkOutNotes?: string | null; paidBreakHours?: number | null },
   workDate: Date,
-  cfg: { minHalf: number; maxHalf: number; fullDayHours: number },
+  cfg: { minHalf: number; maxHalf: number; fullDayHours: number; normalLogin?: number; firstHalfLogin?: number },
 ): AttendanceDecision {
+  const c = { ...cfg, normalLogin: cfg.normalLogin ?? 9 * 60 + 30, firstHalfLogin: cfg.firstHalfLogin ?? 14 * 60 + 30 };
   const holiday = row.status.toLowerCase().includes('holiday');
   const weekend = isWeekendDay(workDate);
   const normalized = normalizeAttendanceStatus(row.status);
@@ -335,7 +337,7 @@ export function classifyAttendanceRow(
     reviewReason: '',
     noteText: '',
   };
-  classifyDay(d, row, workDate, cfg, { holiday, weekend, normalized, shortHoursAction, classification, hours, hasCheckIn, firstMin });
+  classifyDay(d, row, workDate, c, { holiday, weekend, normalized, shortHoursAction, classification, hours, hasCheckIn, firstMin });
 
   // V1.9 notes rule (STWI 1 Oct): any check-in or check-out note on any day,
   // weekends and holidays included, sends the day to Manual Review. It stays
@@ -361,7 +363,7 @@ function classifyDay(
   d: AttendanceDecision,
   row: { status: string; firstCheckIn: Date | null; lastCheckOut: Date | null; lastCheckOutMinutes?: number | null; checkOutNotes?: string | null; paidBreakHours?: number | null },
   workDate: Date,
-  cfg: { minHalf: number; maxHalf: number; fullDayHours: number },
+  cfg: { minHalf: number; maxHalf: number; fullDayHours: number; normalLogin: number; firstHalfLogin: number },
   x: { holiday: boolean; weekend: boolean; normalized: string; shortHoursAction: string; classification: ReturnType<typeof leaveClassification>; hours: number | null; hasCheckIn: boolean; firstMin: number | null },
 ) {
   const { holiday, weekend, normalized, shortHoursAction, classification, hours, hasCheckIn, firstMin } = x;
@@ -369,18 +371,31 @@ function classifyDay(
   if (holiday || weekend) return;
 
   // V1.9 (STWI 2 Oct): "Regularized" / "Regularised" anywhere in the Zoho status
-  // = HR approved the day in Zoho: a full present day (no leave, no review, no
-  // late mark) whatever the hours. With STWI half-day leave it is a 0.5 half
+  // = HR approved the day in Zoho: a full present day (no leave, no review)
+  // whatever the hours; the late mark stays (STWI 5 Nov). With STWI half-day leave it is a 0.5 half
   // day; with full-day STWI leave it stays 1 day of leave.
   if (isRegularized(row.status)) {
     const s = row.status.toLowerCase();
+    let fullLeave = false;
     if (/stwi\s*leave/.test(s)) {
       const half = /(first|second)\s*half|half\s*-?\s*day|0\.5\s*day/.test(s);
       d.status = half ? 'HALF_DAY' : 'STWI_LEAVE';
       d.leaveFraction = half ? 0.5 : 1;
       d.leaveType = half ? 'HALF_DAY' : 'FULL_DAY';
+      fullLeave = !half;
     } else {
       d.status = 'PRESENT';
+    }
+    // STWI 5 Nov (rule B): regularizing approves the day (no leave, no review) but
+    // does NOT remove a late check-in: late after the normal login time (09:30), or
+    // after the first-half login time (14:30) when the first half is the leave.
+    if (!fullLeave && firstMin != null) {
+      const firstHalf = /first\s*half/.test(s) || (!/second\s*half/.test(s) && /half\s*-?\s*day|0\.5\s*day/.test(s) && firstMin >= 12 * 60);
+      const expMin = firstHalf ? cfg.firstHalfLogin : cfg.normalLogin;
+      if (firstMin > expMin) {
+        d.late = true;
+        d.lateMinutes = Math.round(firstMin - expMin);
+      }
     }
     return;
   }
@@ -397,77 +412,87 @@ function classifyDay(
     return;
   }
 
-  if (shortHoursAction === 'REGULARIZED_PRESENT') {
-    // Handover rule 24: always PRESENT, no leave, no review.
-    d.status = 'PRESENT';
-  } else if (shortHoursAction === 'MANUAL_REVIEW') {
+  // V1.9 (STWI 21 Oct, KP-16/17/18/20): only these Zoho statuses are known on a
+  // working day: Present, Absent, STWI Leave (full / half), "0.5 day Present,
+  // 0.5 day Absent", Regularized (above), Holiday / Weekend. Anything else goes
+  // to Manual Review.
+  const isStwi = /stwi\s*leave/.test(normalized);
+  const halfNamed = /(first|second)\s*half|0\.5\s*day|half\s*-?\s*day/.test(normalized);
+  const zohoHalfDay = !isStwi && /0\.5\s*day\s*present/.test(normalized) && /0\.5\s*day\s*absent/.test(normalized);
+  const lastMin = row.lastCheckOutMinutes ?? timeMinutes(row.lastCheckOut);
+  let kind: 'full' | 'first_half' | 'second_half' | 'half_day' | 'none' = 'none';
+  const review = (type: ReviewKind, reason: string) => { d.status = 'MANUAL_REVIEW'; d.reviewType = type; d.reviewReason = reason; };
+
+  if (zohoHalfDay) {
     // Q1: generic Zoho half-day.
-    if (hours == null || hours < cfg.fullDayHours) {
-      d.status = 'MANUAL_REVIEW';
-      d.reviewType = 'UNEXPECTED_DURATION';
-      d.reviewReason = `Zoho half-day under ${formatHours(cfg.fullDayHours)} hours`;
-    } else {
-      d.status = 'HALF_DAY';
-      d.leaveFraction = 0.5;
+    kind = 'half_day';
+    if (hours == null || hours < cfg.fullDayHours) review('UNEXPECTED_DURATION', `Zoho half-day under ${formatHours(cfg.fullDayHours)} hours`);
+    else { d.status = 'HALF_DAY'; d.leaveFraction = 0.5; }
+  } else if (isStwi && halfNamed) {
+    // STWI half day (First Half / Second Half / 0.5 day / half day): always a half
+    // day. It needs 4:00 of Zoho "Total Hours" (paid break already taken out by
+    // Zoho, STWI 2 Oct); empty Total Hours -> review (KP-17); more than 5:30 is a
+    // normal half day (KP-18).
+    kind = /first\s*half/.test(normalized) ? 'first_half' : /second\s*half/.test(normalized) ? 'second_half' : 'half_day';
+    d.status = 'HALF_DAY';
+    d.leaveFraction = 0.5;
+    if (hasCheckIn) {
+      const breakMin = Math.round((row.paidBreakHours ?? 0) * 60);
+      if (hours == null) review('UNEXPECTED_DURATION', `STWI half day: Total Hours missing in Zoho (needs ${formatHours(cfg.minHalf)})`);
+      else if (Math.round(hours * 60) < Math.round(cfg.minHalf * 60)) review('UNEXPECTED_DURATION', `STWI half day: only ${formatHours(hours)} worked (Zoho Total Hours, paid break ${formatHours(breakMin / 60)} already taken out; needs ${formatHours(cfg.minHalf)})`);
     }
-  } else {
-    if (classification.type === 'full') {
+  } else if (isStwi) {
+    if (hours == null || hours <= 0.25) {
+      kind = 'full';
       d.status = 'STWI_LEAVE';
       d.leaveFraction = 1;
       d.leaveType = 'FULL_DAY';
-    } else if (classification.fraction === 0.5) {
+    } else if (hours >= cfg.minHalf && hours <= cfg.maxHalf) {
+      // STWI leave with 4:00-5:30 worked and no half named: a half day
+      kind = 'half_day';
       d.status = 'HALF_DAY';
       d.leaveFraction = 0.5;
+    } else {
+      review('AMBIGUOUS_LEAVE', 'Unclear STWI leave status');
     }
-    if (classification.manual) {
-      d.status = 'MANUAL_REVIEW';
-      d.reviewType = 'AMBIGUOUS_LEAVE';
-      d.reviewReason = 'Unclear STWI leave status';
-    } else if (classification.type !== 'full' && hasCheckIn) {
-      // Q4: short hours -> review instead of automatic shortfall leave.
-      const halfDayCase = ['half_day', 'first_half', 'second_half'].includes(classification.type);
-      const required = halfDayCase ? cfg.minHalf : cfg.fullDayHours;
-      const lastMin = row.lastCheckOutMinutes ?? timeMinutes(row.lastCheckOut);
-      if (halfDayCase && /stwi\s*leave/i.test(row.status)) {
-        // V1.9 (STWI 2 Oct): an STWI half day needs 4:00 of Zoho "Total Hours".
-        // Zoho has already taken the paid break (lunch) out of Total Hours, so
-        // nothing is taken off again and the 12:30-13:30 clock check is gone.
-        // Only if Total Hours is missing are check-in..check-out minus the paid
-        // break used instead.
-        const breakMin = Math.round((row.paidBreakHours ?? 0) * 60);
-        const worked = hours != null
-          ? Math.round(hours * 60)
-          : firstMin != null && lastMin != null ? Math.max(0, lastMin - firstMin - breakMin) : 0;
-        if (worked < Math.round(required * 60)) {
-          d.status = 'MANUAL_REVIEW';
-          d.reviewType = 'UNEXPECTED_DURATION';
-          d.reviewReason = `STWI half day: only ${formatHours(worked / 60)} worked (Zoho Total Hours, paid break ${formatHours(breakMin / 60)} already taken out; needs ${formatHours(required)})`;
-        }
-      } else if (hours != null && hours < required) {
-        d.status = 'MANUAL_REVIEW';
-        d.reviewType = 'UNEXPECTED_DURATION';
-        d.reviewReason = `Short hours (needs ${formatHours(required)})`;
-      }
+  } else if (normalized === 'present') {
+    if (hasCheckIn) {
+      // KP-16: a Present day needs a check-out and Zoho Total Hours
+      if (!row.lastCheckOut && lastMin == null) review('MISSING_CHECKOUT', 'Checked in but no check-out');
+      else if (hours == null) review('UNEXPECTED_DURATION', 'Total Hours missing in Zoho');
+      else if (hours < cfg.fullDayHours) review('UNEXPECTED_DURATION', `Short hours (needs ${formatHours(cfg.fullDayHours)})`);
     }
+  } else if (normalized === 'weekend') {
+    review('OTHER', 'Zoho status "Weekend" on a working day');
+  } else {
+    // KP-20: unknown or empty status
+    review('OTHER', normalized ? 'Unknown Zoho status' : 'Zoho status is empty');
   }
 
   // Missing check-in on a working day (not full-day leave) -> review.
-  if (classification.type !== 'full' && !hasCheckIn && shortHoursAction !== 'REGULARIZED_PRESENT') {
-    d.status = 'MANUAL_REVIEW';
-    d.reviewType = 'MISSING_CHECKIN';
-    d.reviewReason = 'No check-in on a working day';
+  if (kind !== 'full' && !hasCheckIn && d.reviewType !== 'OTHER' && d.reviewType !== 'AMBIGUOUS_LEAVE') {
+    review('MISSING_CHECKIN', 'No check-in on a working day');
   }
 
-  // Late mark (unchanged thresholds: 09:30 / 14:30 for first-half leave).
-  const expected = expectedLoginForAttendance(row.status, classification.type, firstMin);
-  if (expected && firstMin != null) {
-    const [h, m] = expected.split(':').map(Number);
-    const expMin = h * 60 + m;
+  // Late mark: after the normal login time (Settings, default 09:30); after the
+  // first-half login (default 14:30) when the first half is the leave.
+  if (kind !== 'full' && firstMin != null) {
+    const expMin = kind === 'first_half' ? cfg.firstHalfLogin
+      : kind === 'half_day' && firstMin >= 12 * 60 ? cfg.firstHalfLogin
+      : cfg.normalLogin;
     if (firstMin > expMin) {
       d.late = true;
       d.lateMinutes = Math.round(firstMin - expMin);
     }
   }
+}
+
+/** "09:30" -> 570 (fallback when the setting is not a time) */
+export function loginMinutes(v: string | null | undefined, fallback: number) {
+  const m = String(v ?? '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return fallback;
+  const n = Number(m[1]) * 60 + Number(m[2]);
+  return n >= 0 && n < 24 * 60 ? n : fallback;
 }
 
 // Last instant of the payroll month (V1.7 fix: previously resolved to the
@@ -508,10 +533,15 @@ export function reviewSolution(type: string, description: string): string {
     case 'UNEXPECTED_DURATION':
       if (d.startsWith('Zoho half-day under')) fix = 'Regularize (it then shows "/ Regularized" = whole day) or apply half-day leave in Zoho.';
       else if (d.startsWith('STWI half day')) fix = 'Correct the check-in / check-out in Zoho (Regularize) so Total Hours (after the paid break) is 4:00 or more.';
+      else if (d.startsWith('Total Hours missing')) fix = 'Correct the day in Zoho (Regularization) so it has a check-out and Total Hours, then export and upload again.';
       else fix = 'Regularize the day or apply STWI half-day leave in Zoho.';
       break;
     case 'AMBIGUOUS_LEAVE': fix = 'Correct the leave type in Zoho.'; break;
     case 'EMPLOYEE_MISMATCH': fix = 'Fix the Employee ID in Zoho or the file name, then upload again.'; break;
+    case 'OTHER':
+      if (d.startsWith('Unknown Zoho status') || d.startsWith('Zoho status is empty')) { fix = 'Correct the status in Zoho (Present, STWI Leave full/half, Absent, or Regularize the day), then export and upload again.'; break; }
+      if (d.startsWith('Zoho status "Weekend"')) { fix = 'This is a working day for STWI (2nd / 4th / 5th Saturday or a weekday): apply leave or regularize the day in Zoho.'; break; }
+      fix = 'Fix the day in Zoho, then export and upload again.'; break;
     default: fix = 'Fix the day in Zoho, then export and upload again.';
   }
   if (/(Check-in|Check-out) note: "/.test(d)) fix += ' Also remove the check-in / check-out note in Zoho.';
@@ -552,6 +582,10 @@ export type PayrollBase = {
   leavePerThreshold: number;
   /** V1.9: days of the month before the joining date / after the exit date (not paid) */
   notEmployedDays?: number;
+  /** KP-11: to recalculate P.Tax when the gross salary is edited in Payroll Review */
+  ptaxApplicable?: boolean;
+  ptaxThreshold?: number;
+  ptaxAmount?: number;
 };
 
 const OVERRIDE_NUMERIC_FIELDS = ['grossSalary', 'dailySalary', 'deductionLeave', 'leaveDeductionAmount', 'penalty', 'ptax', 'payableAmount', 'lateMarks', 'paidLeaveAllowance', 'doubleDeductionLeave'] as const;
@@ -579,7 +613,12 @@ export function computePayroll(base: PayrollBase, overrides: Record<string, any>
   const dailySalary = pick('dailySalary', grossSalary / Math.max(1, base.calendarDays));
   const leaveDeductionAmount = pick('leaveDeductionAmount', money(dailySalary * deductionLeave));
   const penalty = pick('penalty', base.penalty);
-  const ptax = pick('ptax', base.ptax);
+  // KP-11 (STWI 21 Oct): an edited gross recalculates P.Tax (unless P.Tax itself was edited)
+  const grossEdited = o.grossSalary !== undefined && o.grossSalary !== null && o.grossSalary !== '';
+  const ptaxFromGross = grossEdited && base.ptaxApplicable !== undefined && base.ptaxThreshold !== undefined
+    ? (base.ptaxApplicable && grossSalary > base.ptaxThreshold ? Number(base.ptaxAmount ?? 0) : 0)
+    : base.ptax;
+  const ptax = pick('ptax', ptaxFromGross);
   const payableAmount = pick(
     'payableAmount',
     money(Math.max(0, grossSalary - leaveDeductionAmount - penalty - ptax - securityDeposit - otherDeductions)),
@@ -629,7 +668,17 @@ function baseFromResult(r: any): PayrollBase {
     lateMarkThreshold: num(snap.late_mark_threshold, 3),
     leavePerThreshold: num(snap.leave_per_threshold, 1),
     notEmployedDays: num(t.notEmployedDays, 0),
+    ...(snap.ptaxApplicable !== undefined ? { ptaxApplicable: Boolean(snap.ptaxApplicable), ptaxThreshold: num(snap.ptax_threshold, 12000), ptaxAmount: num(snap.ptax_amount, 200) } : {}),
   };
+}
+
+/** KP-04 (STWI 21 Oct): this month's EMI instalment; the last one clears what is left (no 0.01 left over). */
+function emiInstalment(deposit: { installmentAmount: any; additionalRequired: any; installmentCount: number; transactions: { payrollRunId: string | null }[] }, runId?: string) {
+  const due = Number(deposit.additionalRequired);
+  const inst = Number(deposit.installmentAmount);
+  const paid = deposit.transactions.filter((t) => t.payrollRunId !== runId).length;
+  if (paid + 1 >= deposit.installmentCount || due - inst < 1) return money(due);
+  return money(Math.min(inst, due));
 }
 
 @Injectable()
@@ -810,9 +859,12 @@ export class RunsService {
       const manualDates = new Set(manualRows.map((r) => dateKey(r.workDate)));
 
       try {
-        const minHalf = await this.ruleNumber('half_day_min_hours', 4);
-        const maxHalf = await this.ruleNumber('half_day_max_hours', 5.5);
-        const fullDayHours = await this.ruleNumber('full_day_min_hours', 8);
+        // KP-12: rules valid in this payroll month; late times from Settings
+        const minHalf = await this.ruleNumber('half_day_min_hours', 4, run.year, run.month);
+        const maxHalf = await this.ruleNumber('half_day_max_hours', 5.5, run.year, run.month);
+        const fullDayHours = await this.ruleNumber('full_day_min_hours', 8, run.year, run.month);
+        const normalLogin = loginMinutes(await this.ruleText('normal_login', '09:30', run.year, run.month), 9 * 60 + 30);
+        const firstHalfLogin = loginMinutes(await this.ruleText('first_half_login', '14:30', run.year, run.month), 14 * 60 + 30);
         let imported = 0;
         let skippedManual = 0;
         for (const row of monthRows) {
@@ -821,7 +873,7 @@ export class RunsService {
           if (workDate.getUTCFullYear() !== run.year || workDate.getUTCMonth() + 1 !== run.month) continue;
           if (manualDates.has(dateKey(workDate))) { skippedManual++; continue; }
 
-          const decision = classifyAttendanceRow(row, workDate, { minHalf, maxHalf, fullDayHours });
+          const decision = classifyAttendanceRow(row, workDate, { minHalf, maxHalf, fullDayHours, normalLogin, firstHalfLogin });
           const { status, leaveFraction, late, lateMinutes, reviewType, reviewReason } = decision;
           // V1.9 (STWI 1 Oct): reviews are fixed in Zoho, not in the app, so no
           // earlier decision is re-applied here; the new file decides.
@@ -914,7 +966,8 @@ export class RunsService {
     // V1.9: the "could not match file ..." review goes with the file.
     await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, type: 'EMPLOYEE_MISMATCH', description: { contains: file.originalName } } });
     if (employeeIds.length) {
-      await this.prisma.payrollResult.deleteMany({ where: { payrollRunId: runId, employeeId: { in: employeeIds } } });
+      // KP-08 (STWI 21 Oct): the payroll row (with Payroll Review edits) is kept,
+      // like on re-upload; Calculate refreshes it after the new file is uploaded.
       await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, employeeId: { in: employeeIds } } });
     }
     await this.audit.log({ userId, action: 'DELETE_ATTENDANCE_FILE', entityType: 'AttendanceFile', entityId: fileId, afterJson: { runId, originalName: file.originalName } });
@@ -976,13 +1029,27 @@ if (run.status === 'FINALIZED') {
 }
     const existing = await this.prisma.attendanceRecord.findFirst({ where: { id: attendanceId, payrollRunId: runId } });
     if (!existing) throw new NotFoundException('Attendance record not found');
-    const p = this.attendancePayload(runId, body);
-    // V1.7: fields that are not sent keep their current value. Previously an
-    // Edit that did not send check-in/check-out/hours wiped them to null/0.
+    // KP-24 (STWI 21 Oct): only the fields that are sent are changed; everything
+    // else keeps its current value.
     const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k);
-    const updated = await this.prisma.attendanceRecord.update({ where: { id: attendanceId }, data: { workDate: p.d, firstCheckIn: has('firstCheckIn') ? p.firstCheckIn : existing.firstCheckIn, lastCheckOut: has('lastCheckOut') ? p.lastCheckOut : existing.lastCheckOut, workedHours: has('workedHours') ? p.hours : existing.workedHours, sourceStatus: body.sourceStatus ?? existing.sourceStatus ?? 'MANUAL ENTRY', status: p.status, isLate: p.isLate, lateMinutes: p.lateMinutes, leaveFraction: p.leaveFraction || null, isHoliday: Boolean(body.isHoliday), isWeekOff: Boolean(body.isWeekOff), manualNotes: body.manualNotes ?? existing.manualNotes }, include: { employee: true } });
+    const p = this.attendancePayload(runId, { workDate: existing.workDate, ...body });
+    const leave = has('leaveFraction') ? p.leaveFraction : Number(existing.leaveFraction ?? 0);
+    const updated = await this.prisma.attendanceRecord.update({ where: { id: attendanceId }, data: {
+      workDate: has('workDate') ? p.d : existing.workDate,
+      firstCheckIn: has('firstCheckIn') ? p.firstCheckIn : existing.firstCheckIn,
+      lastCheckOut: has('lastCheckOut') ? p.lastCheckOut : existing.lastCheckOut,
+      workedHours: has('workedHours') ? p.hours : existing.workedHours,
+      sourceStatus: body.sourceStatus ?? existing.sourceStatus ?? 'MANUAL ENTRY',
+      status: has('status') ? p.status : existing.status,
+      isLate: has('isLate') ? p.isLate : existing.isLate,
+      lateMinutes: has('lateMinutes') ? p.lateMinutes : existing.lateMinutes,
+      leaveFraction: leave || null,
+      isHoliday: has('isHoliday') ? Boolean(body.isHoliday) : existing.isHoliday,
+      isWeekOff: has('isWeekOff') ? Boolean(body.isWeekOff) : existing.isWeekOff,
+      manualNotes: body.manualNotes ?? existing.manualNotes,
+    }, include: { employee: true } });
     await this.prisma.leaveEvent.deleteMany({ where: { attendanceRecordId: attendanceId } });
-    if (p.leaveFraction > 0) await this.prisma.leaveEvent.create({ data: { payrollRunId: runId, employeeId: existing.employeeId, attendanceRecordId: attendanceId, leaveFraction: p.leaveFraction, leaveType: p.leaveFraction === 1 ? 'FULL_DAY' : 'HALF_DAY', approved: true } });
+    if (leave > 0) await this.prisma.leaveEvent.create({ data: { payrollRunId: runId, employeeId: existing.employeeId, attendanceRecordId: attendanceId, leaveFraction: leave, leaveType: leave === 1 ? 'FULL_DAY' : 'HALF_DAY', approved: true } });
     await this.recomputeSandwich(runId, existing.employeeId);
     await this.audit.log({ userId, employeeId: existing.employeeId, action: 'UPDATE_ATTENDANCE', entityType: 'AttendanceRecord', entityId: attendanceId, beforeJson: existing, afterJson: updated });
     return updated;
@@ -1229,8 +1296,6 @@ const totalHoursIdx = findCol(headers, [
       throw new BadRequestException('Upload at least one valid attendance Excel file before processing.');
     }
 
-    await this.prisma.payrollRun.update({ where: { id: runId }, data: { status: 'PROCESSING' } });
-
     const importedSourceRows = await this.prisma.attendanceRecord.findMany({
       where: { payrollRunId: runId, attendanceFileId: { not: null } },
       select: { employeeId: true },
@@ -1254,6 +1319,8 @@ const totalHoursIdx = findCol(headers, [
     if (!importedCount) {
       throw new BadRequestException('No attendance records were imported from the uploaded files. Check the Excel format and employee IDs.');
     }
+    // KP-14: the status changes only after the checks above passed
+    await this.prisma.payrollRun.update({ where: { id: runId }, data: { status: 'PROCESSING' } });
 
     const holidayDates = await this.prisma.attendanceRecord.findMany({
       where: { payrollRunId: runId, isHoliday: true },
@@ -1267,12 +1334,22 @@ const totalHoursIdx = findCol(headers, [
     // check-in/check-out, short hours, ambiguous leave) are left untouched, so
     // they can no longer silently disappear when Process is clicked.
     const missingDayPrefix = 'No attendance record was found for';
+    const dayOf = (x: Date) => Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
     for (const emp of employees) {
       if (!emp.salaryHistory[0]) continue;
+      const joined = emp.joiningDate ? dayOf(emp.joiningDate) : null;
+      const left = emp.dateOfExit ? dayOf(emp.dateOfExit) : null;
 
       for (let day = 1; day <= totalDays; day++) {
         const d = new Date(Date.UTC(run.year, run.month - 1, day));
         const missingDayDescription = `${missingDayPrefix} ${dateKey(d)}.`;
+        // KP-02 (STWI 21 Oct): days before joining / after the exit date are not in
+        // the Zoho file and are not asked about (no filler row, no review).
+        if ((joined != null && d.getTime() < joined) || (left != null && d.getTime() > left)) {
+          await this.prisma.manualReview.deleteMany({ where: { payrollRunId: runId, employeeId: emp.id, type: 'MISSING_CHECKIN', description: missingDayDescription } });
+          await this.prisma.attendanceRecord.deleteMany({ where: { payrollRunId: runId, employeeId: emp.id, workDate: d, attendanceFileId: null, sourceStatus: null } });
+          continue;
+        }
         const existing = await this.prisma.attendanceRecord.findUnique({
           where: {
             payrollRunId_employeeId_workDate: {
@@ -1361,6 +1438,12 @@ const totalHoursIdx = findCol(headers, [
     const byDay = new Map(records.map((r) => [dateKey(r.workDate), r]));
     const days = new Date(Date.UTC(run.year, run.month, 0)).getUTCDate();
     const joined = emp.joiningDate ? Date.UTC(emp.joiningDate.getUTCFullYear(), emp.joiningDate.getUTCMonth(), emp.joiningDate.getUTCDate()) : 0;
+    // KP-19 (STWI 21 Oct): every day that has an open Manual Review item breaks the
+    // chain, also an "Absent" day waiting for its check-out.
+    const reviewDays = new Set<string>();
+    for (const rv of await this.prisma.manualReview.findMany({ where: { payrollRunId: runId, employeeId, status: 'OPEN', ...BLOCKING_REVIEW }, select: { description: true } })) {
+      for (const m of rv.description.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)) reviewDays.add(m[1]);
+    }
     // 'O' off day, 'L' full-day leave, 'P' anything else (breaks a sandwich)
     const cls: ('O' | 'L' | 'P')[] = [];
     const recs: (typeof records[number] | undefined)[] = [];
@@ -1368,7 +1451,7 @@ const totalHoursIdx = findCol(headers, [
       const t = Date.UTC(run.year, run.month - 1, day);
       const r = byDay.get(dateKey(new Date(t)));
       recs.push(r);
-      if (!r || t < joined) cls.push('P');
+      if (!r || t < joined || reviewDays.has(dateKey(new Date(t)))) cls.push('P');
       // an off day with a check-in was worked, so it breaks the chain
       else if ((r.isWeekOff || r.isHoliday) && (r.status === 'WEEK_OFF' || r.status === 'HOLIDAY') && !r.firstCheckIn) cls.push('O');
       // full-day STWI leave / Absent (or a day HR edited to 1 day leave)
@@ -1441,6 +1524,9 @@ const totalHoursIdx = findCol(headers, [
     if (run.status === 'FINALIZED') throw new BadRequestException('Finalized run is locked');
     const sourceCount = await this.prisma.attendanceFile.count({ where: { payrollRunId: runId, status: 'PROCESSED' } });
     if (!sourceCount) throw new BadRequestException('Process at least one uploaded attendance file before calculating payroll.');
+    // KP-15 (STWI 21 Oct): files uploaded after the last Process must be processed first
+    const notProcessed = await this.prisma.attendanceFile.count({ where: { payrollRunId: runId, status: 'READY' } });
+    if (notProcessed) throw new BadRequestException(`${notProcessed} file(s) were uploaded after the last Process. Click Process Attendance first, then Calculate.`);
     await this.flagLeavers(run);
     // V1.9 (STWI 1 Oct): every review blocks Calculate except the information
     // item for an employee's last month.
@@ -1468,6 +1554,7 @@ const totalHoursIdx = findCol(headers, [
       },
     });
 
+    const calculatedIds: string[] = [];
     for (const emp of employees) {
       const gross = emp.salaryHistory[0] ? Number(emp.salaryHistory[0].grossSalary) : 0;
       if (!gross) continue;
@@ -1511,7 +1598,8 @@ const totalHoursIdx = findCol(headers, [
         orderBy: { createdAt: 'desc' },
       });
       const requiredDeposit = Math.max(0, gross);
-      const additional = Math.max(0, requiredDeposit - held);
+      // KP-04 (STWI 21 Oct): less than ₹1 still due is ignored (EMI rounding)
+      const additional = requiredDeposit - held < 1 ? 0 : money(requiredDeposit - held);
 
       if (deposit) {
         deposit = await this.prisma.securityDeposit.update({
@@ -1573,7 +1661,7 @@ const totalHoursIdx = findCol(headers, [
         Number(deposit.installmentAmount) > 0 &&
         deposit.transactions.some((t) => t.payrollRunId !== runId)
       ) {
-        securityDeposit = money(Math.min(Number(deposit.installmentAmount), Number(deposit.additionalRequired)));
+        securityDeposit = emiInstalment(deposit, runId);
       }
       const otherDeductions = existingResult ? Number(existingResult.otherDeductions) : 0;
 
@@ -1589,6 +1677,9 @@ const totalHoursIdx = findCol(headers, [
         lateMarkThreshold: rules.late_mark_threshold,
         leavePerThreshold: rules.leave_per_threshold,
         notEmployedDays,
+        ptaxApplicable: Boolean(emp.professionalTaxApplicable),
+        ptaxThreshold: rules.ptax_threshold,
+        ptaxAmount: rules.ptax_amount,
       };
       const calculated = computePayroll(base, {}, securityDeposit, otherDeductions);
       // V1.7: manual Payroll Review edits are re-applied on every recalculation
@@ -1602,6 +1693,7 @@ const totalHoursIdx = findCol(headers, [
         effective: traceOf(eff, base, securityDeposit, otherDeductions),
         manualOverrides,
         sandwichDays: employed.filter((r) => r.isSandwich).length,
+        ptaxApplicable: Boolean(emp.professionalTaxApplicable),
         ...(existingSnapshot.depositSkipped ? { depositSkipped: true } : {}),
       };
       const columns = {
@@ -1611,6 +1703,7 @@ const totalHoursIdx = findCol(headers, [
         doubleDeductionLeave: eff.doubleDeductionLeave, penalty: eff.penalty, securityDeposit, ptax: eff.ptax,
         otherDeductions, payableAmount: eff.payableAmount, ruleSnapshot: snapshot,
       };
+      calculatedIds.push(emp.id);
       await this.prisma.payrollResult.upsert({
         where: { payrollRunId_employeeId: { payrollRunId: runId, employeeId: emp.id } },
         update: columns,
@@ -1618,7 +1711,10 @@ const totalHoursIdx = findCol(headers, [
       });
     }
 
-    await this.audit.log({ userId, action: 'CALCULATE', entityType: 'PayrollRun', entityId: runId, afterJson: { rules } });
+    // KP-41 (STWI 21 Oct): payroll rows of employees that are no longer calculated
+    // (no file, no salary, joined after the month, left before it) are removed.
+    const stale = await this.prisma.payrollResult.deleteMany({ where: { payrollRunId: runId, employeeId: { notIn: calculatedIds } } });
+    await this.audit.log({ userId, action: 'CALCULATE', entityType: 'PayrollRun', entityId: runId, afterJson: { rules, removedRows: stale.count } });
     return this.prisma.payrollResult.findMany({ where: { payrollRunId: runId }, include: { employee: true }, orderBy: { employee: { name: 'asc' } } });
   }
 
@@ -1643,7 +1739,8 @@ const totalHoursIdx = findCol(headers, [
       payrollRunId: runId,
       ...(employeeId ? { employeeId: employeeId } : {}),
       ...(flags.late !== undefined ? { lateMarks: flags.late ? { gt: 0 } : { equals: 0 } } : {}),
-      ...(flags.leave !== undefined ? { OR: flags.leave ? [{ stwiLeaveDays: { gt: 0 } }, { excessLeaveDeduction: { gt: 0 } }, { doubleDeductionLeave: { gt: 0 } }] : [{ stwiLeaveDays: { equals: 0 } }, { excessLeaveDeduction: { equals: 0 }, doubleDeductionLeave: { equals: 0 } }] } : {}),
+      // KP-40: "no leave" = no leave days AND no excess / double-deduction leave
+      ...(flags.leave !== undefined ? (flags.leave ? { OR: [{ stwiLeaveDays: { gt: 0 } }, { excessLeaveDeduction: { gt: 0 } }, { doubleDeductionLeave: { gt: 0 } }] } : { AND: [{ stwiLeaveDays: { equals: 0 } }, { excessLeaveDeduction: { equals: 0 } }, { doubleDeductionLeave: { equals: 0 } }] }) : {}),
       ...(flags.penalty !== undefined ? { penalty: flags.penalty ? { gt: 0 } : { equals: 0 } } : {}),
       ...(flags.ptax !== undefined ? { ptax: flags.ptax ? { gt: 0 } : { equals: 0 } } : {}),
       ...(flags.deposit !== undefined ? { securityDeposit: flags.deposit ? { gt: 0 } : { equals: 0 } } : {}),
@@ -1756,16 +1853,31 @@ const totalHoursIdx = findCol(headers, [
       if (!Number.isFinite(n) || n < 0) throw new BadRequestException(`Invalid value for ${field}`);
       return money(n);
     };
-    const updated = await this.saveResult(result, {
-      manualOverrides,
-      securityDeposit: amount('securityDeposit'),
-      otherDeductions: amount('otherDeductions'),
-    });
+    // KP-09 (STWI 21 Oct): Clear Edits also puts other deduction back to 0 and the
+    // security deposit back to what the chosen method gives.
+    const updated = body.resetOverrides
+      ? await this.saveResult(result, { manualOverrides, otherDeductions: 0, securityDeposit: await this.methodDeposit(runId, employeeId, snapshot) })
+      : await this.saveResult(result, {
+          manualOverrides,
+          securityDeposit: amount('securityDeposit'),
+          otherDeductions: amount('otherDeductions'),
+        });
     await this.audit.log({
       userId, employeeId, action: body.resetOverrides ? 'RESET_PAYROLL_EDITS' : 'EDIT_PAYROLL_RESULT', entityType: 'PayrollResult', entityId: result.id,
       beforeJson: result, afterJson: updated,
     });
     return updated;
+  }
+
+  /** This month's deposit deduction from the deposit plan (method chosen in this run, EMI in progress, or none). */
+  private async methodDeposit(runId: string, employeeId: string, snapshot: any) {
+    if (snapshot?.depositSkipped) return 0;
+    const deposit = await this.prisma.securityDeposit.findFirst({ where: { employeeId, status: 'ACTIVE' }, orderBy: { createdAt: 'desc' }, include: { transactions: true } });
+    if (!deposit || Number(deposit.additionalRequired) <= 0) return 0;
+    const emiInProgress = deposit.method === 'EMI_3_MONTHS' && Number(deposit.installmentAmount) > 0 && deposit.transactions.some((t) => t.payrollRunId !== runId);
+    if (emiInProgress || snapshot?.depositMethod === 'EMI_3_MONTHS') return emiInstalment(deposit, runId);
+    if (snapshot?.depositMethod === 'FULL') return money(Number(deposit.additionalRequired));
+    return 0;
   }
 
   async setOtherDeduction(userId: string, runId: string, employeeId: string, amount: number) {
@@ -1812,13 +1924,13 @@ const totalHoursIdx = findCol(headers, [
     const installmentCount = method === 'FULL' ? 1 : 3;
     const installmentAmount = method === 'FULL'
       ? remaining
-      : emiInProgress ? money(Math.min(Number(deposit.installmentAmount), remaining)) : money(remaining / installmentCount);
+      : emiInProgress ? emiInstalment(deposit, runId) : money(remaining / installmentCount);
     await this.prisma.securityDeposit.update({
       where: { id: deposit.id },
       data: { method, installmentCount, ...(method === 'EMI_3_MONTHS' && emiInProgress ? {} : { installmentAmount }) },
     });
 
-    const updated = await this.saveResult(result, { securityDeposit: installmentAmount, snapshotFlags: { depositSkipped: undefined } });
+    const updated = await this.saveResult(result, { securityDeposit: installmentAmount, snapshotFlags: { depositSkipped: undefined, depositMethod: method } });
     await this.audit.log({ userId, employeeId, action: 'SET_SECURITY_DEPOSIT_METHOD', entityType: 'PayrollResult', entityId: result.id, afterJson: { method, installmentAmount } });
     return updated;
   }
@@ -1827,16 +1939,18 @@ const totalHoursIdx = findCol(headers, [
     const run = await this.prisma.payrollRun.findUnique({ where: { id: runId } });
     if (!run) throw new NotFoundException('Payroll run not found');
     if (run.status === 'FINALIZED') return run;
-    const open = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN' } });
-    if (open) throw new BadRequestException(`Resolve ${open} open manual review(s) before finalization.`);
+    // KP-01 (STWI 21 Oct): the "Last month" information item of a leaver does not block Finalize
+    const open = await this.prisma.manualReview.count({ where: { payrollRunId: runId, status: 'OPEN', ...BLOCKING_REVIEW } });
+    if (open) throw new BadRequestException(`${open} Manual Review item(s) still need fixing in Zoho before finalization.`);
 
     await this.calculatePayroll(runId, userId);
-    const results = await this.prisma.payrollResult.findMany({ where: { payrollRunId: runId } });
+    const results = await this.prisma.payrollResult.findMany({ where: { payrollRunId: runId }, include: { employee: true } });
 
     for (const result of results) {
       const deposit = await this.prisma.securityDeposit.findFirst({ where: { employeeId: result.employeeId, status: 'ACTIVE' }, include: { transactions: true }, orderBy: { createdAt: 'desc' } });
       if (deposit && Number(deposit.additionalRequired) > 0 && Number(result.securityDeposit) <= 0) {
-        throw new BadRequestException(`Select a security deposit method for ${result.employeeId} before finalization.`);
+        // KP-06: name and Employee ID instead of the internal id
+        throw new BadRequestException(`Select a security deposit method for ${result.employee.name} (${result.employee.employeeCode}) before finalization.`);
       }
     }
 
@@ -1849,7 +1963,7 @@ const totalHoursIdx = findCol(headers, [
       const amount = money(Math.min(Number(result.securityDeposit), Number(deposit.additionalRequired)));
       await this.prisma.securityDepositTransaction.create({ data: { employeeId: result.employeeId, securityDepositId: deposit.id, payrollRunId: runId, installmentNumber, amount, transactionDate: new Date(), note: `Payroll ${run.month}/${run.year} security deposit deduction` } });
       const remainingAfter = Math.max(0, Number(deposit.additionalRequired) - amount);
-      if (installmentNumber >= deposit.installmentCount || remainingAfter <= 0.01) {
+      if (installmentNumber >= deposit.installmentCount || remainingAfter < 1) {
         await this.prisma.securityDeposit.update({ where: { id: deposit.id }, data: { status: 'COMPLETED', completedAt: new Date(), alreadyHeld: Number(deposit.alreadyHeld) + amount, additionalRequired: 0 } });
       } else {
         await this.prisma.securityDeposit.update({ where: { id: deposit.id }, data: { alreadyHeld: Number(deposit.alreadyHeld) + amount, additionalRequired: remainingAfter } });
@@ -1865,8 +1979,28 @@ const totalHoursIdx = findCol(headers, [
     const run = await this.prisma.payrollRun.findUnique({ where: { id: runId } });
     if (!run) throw new NotFoundException('Payroll run not found');
     if (run.status !== 'FINALIZED') return run;
+    // KP-07 (STWI 21 Oct): only the latest finalized month can be reopened, and its
+    // security deposit instalments are undone (recorded again on the next Finalize).
+    const later = await this.prisma.payrollRun.findFirst({
+      where: { status: 'FINALIZED', id: { not: runId }, OR: [{ year: { gt: run.year } }, { year: run.year, month: { gt: run.month } }] },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    });
+    if (later) throw new BadRequestException(`Only the latest finalized month can be reopened: ${MONTHS[later.month - 1]} ${later.year} is finalized after this month. Reopen that month first.`);
+    const txs = await this.prisma.securityDepositTransaction.findMany({ where: { payrollRunId: runId }, include: { securityDeposit: true } });
+    for (const t of txs) {
+      const dep = t.securityDeposit;
+      await this.prisma.securityDepositTransaction.delete({ where: { id: t.id } });
+      if (!dep) continue;
+      // a newer plan made after this month (no instalment yet) is replaced by the reopened one
+      await this.prisma.securityDeposit.deleteMany({ where: { employeeId: dep.employeeId, status: 'ACTIVE', id: { not: dep.id }, createdAt: { gt: dep.createdAt }, transactions: { none: {} } } });
+      await this.prisma.securityDeposit.update({ where: { id: dep.id }, data: {
+        status: 'ACTIVE', completedAt: null,
+        alreadyHeld: money(Math.max(0, Number(dep.alreadyHeld) - Number(t.amount))),
+        additionalRequired: money(Number(dep.additionalRequired) + Number(t.amount)),
+      } });
+    }
     const updated = await this.prisma.payrollRun.update({ where: { id: runId }, data: { status: 'REOPENED', reopenedAt: new Date() } });
-    await this.audit.log({ userId, action: 'REOPEN', entityType: 'PayrollRun', entityId: runId });
+    await this.audit.log({ userId, action: 'REOPEN', entityType: 'PayrollRun', entityId: runId, afterJson: { depositInstalmentsUndone: txs.length } });
     return updated;
   }
 
@@ -1940,7 +2074,8 @@ const totalHoursIdx = findCol(headers, [
       ...(query.employeeId ? { employeeId: query.employeeId } : {}),
       ...(query.status ? { status: query.status as any } : {}),
       ...(late !== undefined ? { isLate: late } : {}),
-      ...(leave !== undefined ? { leaveFraction: leave ? { gt: 0 } : { equals: 0 } } : {}),
+      // KP-40: days without leave are stored as empty (null) or 0
+      ...(leave !== undefined ? (leave ? { leaveFraction: { gt: 0 } } : { OR: [{ leaveFraction: null }, { leaveFraction: { equals: 0 } }] }) : {}),
       ...(holiday !== undefined ? { isHoliday: holiday } : {}),
       ...(weekOff !== undefined ? { isWeekOff: weekOff } : {}),
       ...(Object.keys(workDate).length ? { workDate } : {}),
@@ -1954,27 +2089,27 @@ const totalHoursIdx = findCol(headers, [
     return paged(data, total, page, pageSize);
   }
 
-  private async ruleNumber(key: string, fallback: number) { const r = await this.prisma.ruleDefinition.findFirst({ where: { key, effectiveTo: null }, orderBy: { effectiveFrom: 'desc' } }); const n = Number(r?.value); return Number.isFinite(n) ? n : fallback; }
+  // KP-12 (STWI 21 Oct): the rule value valid in the payroll month
+  private async ruleNumber(key: string, fallback: number, year: number, month: number) { const r = await ruleVersionFor(this.prisma, key, year, month); const n = Number(r?.value); return r && r.value !== '' && Number.isFinite(n) ? n : fallback; }
+  private async ruleText(key: string, fallback: string, year: number, month: number) { const r = await ruleVersionFor(this.prisma, key, year, month); return r?.value?.trim() || fallback; }
   private async rulesSnapshot(year: number, month: number) {
-    const storedPtaxThreshold = await this.ruleNumber('ptax_threshold', 12000);
+    const storedPtaxThreshold = await this.ruleNumber('ptax_threshold', 12000, year, month);
     // 15000 was the old legacy seed value; the confirmed STWI rule is now
     // > ₹12,000. Preserve explicit non-legacy changes, but automatically
     // interpret the old seed as the new confirmed threshold.
     const ptaxThreshold = storedPtaxThreshold === 15000 ? 12000 : storedPtaxThreshold;
 
     return {
-      paid_leave_allowance: await this.ruleNumber('paid_leave_allowance', 1.5),
-      late_mark_threshold: await this.ruleNumber('late_mark_threshold', 3),
-      leave_per_threshold: await this.ruleNumber('leave_per_threshold', 1),
-      normal_login: (await this.prisma.ruleDefinition.findFirst({ where: { key: 'normal_login', effectiveTo: null }, orderBy: { effectiveFrom: 'desc' } }))?.value ?? '09:30',
-      first_half_login: (await this.prisma.ruleDefinition.findFirst({ where: { key: 'first_half_login', effectiveTo: null }, orderBy: { effectiveFrom: 'desc' } }))?.value ?? '14:30',
+      paid_leave_allowance: await this.ruleNumber('paid_leave_allowance', 1.5, year, month),
+      late_mark_threshold: await this.ruleNumber('late_mark_threshold', 3, year, month),
+      leave_per_threshold: await this.ruleNumber('leave_per_threshold', 1, year, month),
+      normal_login: await this.ruleText('normal_login', '09:30', year, month),
+      first_half_login: await this.ruleText('first_half_login', '14:30', year, month),
       ptax_threshold: ptaxThreshold,
-      ptax_amount: await this.ruleNumber('ptax_amount', 200),
-      full_day_min_hours: await this.ruleNumber('full_day_min_hours', 8),
-      half_day_min_hours: await this.ruleNumber('half_day_min_hours', 4),
-      half_day_max_hours: await this.ruleNumber('half_day_max_hours', 5.5),
-      double_deduction_leave_days: await this.ruleNumber('double_deduction_leave_days', 1),
-      daily_salary_divisor: null,
+      ptax_amount: await this.ruleNumber('ptax_amount', 200, year, month),
+      full_day_min_hours: await this.ruleNumber('full_day_min_hours', 8, year, month),
+      half_day_min_hours: await this.ruleNumber('half_day_min_hours', 4, year, month),
+      half_day_max_hours: await this.ruleNumber('half_day_max_hours', 5.5, year, month),
       year, month,
     };
   }
@@ -2013,7 +2148,7 @@ const totalHoursIdx = findCol(headers, [
 
     // ---------------------------------------------------------------- employee sheets
     const usedNames = new Set<string>(['payment sheet', 'email summary', 'manual review', 'calculation trace']);
-    type Line = { r: any; eff: ReturnType<typeof computePayroll>; sheet: string; deposit: number; other: number; held: number; mismatch: boolean; expected: number };
+    type Line = { leaveEdited?: boolean; cells: Record<string, number>; r: any; eff: ReturnType<typeof computePayroll>; sheet: string; deposit: number; other: number; held: number; mismatch: boolean; expected: number };
     const lines: Line[] = [];
     for (const r of payroll) {
       const e = r.employee;
@@ -2062,7 +2197,11 @@ const totalHoursIdx = findCol(headers, [
       const label = (row: number, text: string) => set(`N${row}`, text);
       label(2, 'Total Working Days'); set('O2', days);
       label(3, 'Leave'); set('O3', money(base.leaveUsed - halfCount * 0.5 - sandwichCount));
-      label(4, 'Half Day'); set('O4', f(`0.5*${halfCount}`, halfDays * 0.5));
+      // KP-26: edited half-day count is written into the formula.
+      // STWI 5 Nov (option A): O4 stays the LEAVE days of the half days (0.5 each,
+      // as in STWI's sheet); the number of half days is shown next to it in P4.
+      label(4, 'Half Day (leave days)'); set('O4', f(`0.5*${halfDays}`, halfDays * 0.5));
+      { const c = ws.getCell('P4'); c.value = `${halfDays} half day${halfDays === 1 ? '' : 's'}`; c.font = font({ italic: true, color: { argb: 'FF808080' } }); }
       label(5, 'Late Mark'); set('O5', eff.lateLeaveDeduction); set('P5', lateCount);
       label(6, 'Early Check out'); set('O6', 0);
       label(7, 'Missing Selfie'); set('O7', 0);
@@ -2074,13 +2213,24 @@ const totalHoursIdx = findCol(headers, [
       if (base.notEmployedDays) { const c = ws.getCell('P11'); c.value = `incl. ${base.notEmployedDays} day(s) before joining`; c.font = font({ italic: true, color: { argb: 'FF808080' } }); }
       const ded = Math.max(0, totalLeave - eff.paidLeaveAllowance);
       label(12, 'Deduction Leave'); set('O12', overrides.deductionLeave != null && overrides.deductionLeave !== '' ? money(eff.deductionLeave - ddl) : f('O9-O10', ded));
-      label(13, 'Total Working Days'); set('O13', f('O2-O11-O12'));
-      label(14, 'Paid Leave'); set('O14', f('O19/O2*O10'), MONEY);
-      label(15, 'Leave Deducation'); set('O15', f('O19/O2*(O12+O11)'), MONEY);
+      // STWI 5 Nov: every formula is saved WITH its result, so the numbers also show
+      // in Excel's Protected View, phone / WhatsApp / Drive previews (they do not
+      // calculate). The results below are exactly what the formulas give.
+      const v10 = Math.min(eff.paidLeaveAllowance, totalLeave);
+      const v12 = typeof ws.getCell('O12').value === 'number' ? Number(ws.getCell('O12').value) : ded;
+      const v13 = days - ddl - v12;
+      label(13, 'Total Working Days'); set('O13', f('O2-O11-O12', v13));
+      // KP-26: when the per-day salary or the leave deduction was edited, the
+      // formulas use the edited figures (O20 = edited per day)
+      const perDayEdited = overrides.dailySalary != null && overrides.dailySalary !== '';
+      const ldaEdited = overrides.leaveDeductionAmount != null && overrides.leaveDeductionAmount !== '';
+      const v20 = perDayEdited ? eff.dailySalary : eff.grossSalary / days;
+      label(14, 'Paid Leave'); set('O14', f(perDayEdited ? 'O20*O10' : 'O19/O2*O10', v20 * v10), MONEY);
+      label(15, 'Leave Deducation'); set('O15', ldaEdited ? eff.leaveDeductionAmount : f(perDayEdited ? 'O20*(O12+O11)' : 'O19/O2*(O12+O11)', v20 * (v12 + ddl)), MONEY);
       if (other) { label(17, 'Other Deduction'); set('O17', other, MONEY); }
       label(19, 'Total Payment'); set('O19', eff.grossSalary, MONEY);
-      label(20, 'Per Day'); set('O20', overrides.dailySalary != null && overrides.dailySalary !== '' ? eff.dailySalary : f('O19/O2'), MONEY);
-      label(21, 'Working Day Payment'); set('O21', f('O20*O13'), MONEY);
+      label(20, 'Per Day'); set('O20', perDayEdited ? eff.dailySalary : f('O19/O2', v20), MONEY);
+      label(21, 'Working Day Payment'); set('O21', f('O20*O13', v20 * v13), MONEY);
       label(22, 'Security Deposit Deducation'); set('O22', deposit, MONEY);
       label(23, 'Penalty'); set('O23', eff.penalty, MONEY);
       label(24, 'P.Tax'); set('O24', eff.ptax, MONEY);
@@ -2103,7 +2253,8 @@ const totalHoursIdx = findCol(headers, [
       key.forEach(([t, fill], i) => { const a = ws.getCell(`N${30 + i}`); a.value = t; a.border = BOX; a.font = font(); const b = ws.getCell(`O${30 + i}`); b.fill = fill; b.border = BOX; });
 
       for (const [col, w] of Object.entries({ A: 12, B: 16, C: 13, D: 18, E: 18, F: 9, G: 9, H: 9, I: 10, J: 30, K: 22, L: 20, N: 26, O: 12, P: 12 })) ws.getColumn(col).width = w;
-      lines.push({ r, eff, sheet, deposit, other, held: await this.deposits.getHeldAmount(r.employeeId), mismatch, expected });
+      lines.push({ r, eff, sheet, deposit, other, held: await this.deposits.getHeldAmount(r.employeeId), mismatch, expected, leaveEdited: perDayEdited || ldaEdited,
+        cells: { O4: halfDays * 0.5, O5: eff.lateLeaveDeduction, O9: totalLeave, O10: v10, O11: ddl, O12: v12, O15: ldaEdited ? eff.leaveDeductionAmount : v20 * (v12 + ddl) } });
     }
 
     // ---------------------------------------------------------------- Payment Sheet
@@ -2121,9 +2272,10 @@ const totalHoursIdx = findCol(headers, [
       const renewal = ov.renewalDate ? (/^\d{4}-\d{2}-\d{2}/.test(String(ov.renewalDate)) ? new Date(`${String(ov.renewalDate).slice(0, 10)}T00:00:00Z`) : ov.renewalDate) : null;
       const vals: any[] = [
         i + 1, l.r.employee.name, Number(l.r.calendarDays) || calendarDays, l.eff.grossSalary, l.deposit, l.other || 0,
-        f(`SUM(D${row}/C${row}*(K${row}+O${row}))`, l.eff.leaveDeductionAmount), l.eff.penalty || null, l.eff.ptax,
+        l.leaveEdited ? f(`${s}O15`, l.cells.O15) : f(`SUM(D${row}/C${row}*(K${row}+O${row}))`, l.eff.grossSalary / (Number(l.r.calendarDays) || calendarDays) * (l.cells.O12 + l.cells.O11)), l.eff.penalty || null, l.eff.ptax,
         l.mismatch ? l.eff.payableAmount : f(`SUM(D${row}-E${row}-F${row}-G${row}-H${row}-I${row})`, l.eff.payableAmount),
-        f(`${s}O12`), f(`${s}O4`), f(`${s}O5`), f(`${s}O10`), f(`${s}O11`), f(`${s}O9`),
+        // STWI 5 Nov: links saved with their results (shown in Protected View too)
+        f(`${s}O12`, l.cells.O12), f(`${s}O4`, l.cells.O4), f(`${s}O5`, l.cells.O5), f(`${s}O10`, l.cells.O10), f(`${s}O11`, l.cells.O11), f(`${s}O9`, l.cells.O9),
         join, renewal, l.held, ov.details || null,
       ];
       vals.forEach((v, c) => { const cell = paySheet.getCell(row, c + 1); cell.value = v; cell.border = BOX; cell.font = font(); });
@@ -2145,7 +2297,7 @@ const totalHoursIdx = findCol(headers, [
       const mail = e.email || e.personalEmail || '';
       const card: [string, any, boolean?][] = [[e.firstName || e.name, mail], ['Monthly Payment', f(`${ps}D${p}`, l.eff.grossSalary)], ['Total Payable Amt For Current Month', f(`${ps}J${p}`, l.eff.payableAmount)], ['Leave Deduction', f(`${ps}G${p}`, l.eff.leaveDeductionAmount), true]];
       if (e.joiningDate && e.joiningDate.getUTCFullYear() === run.year && e.joiningDate.getUTCMonth() + 1 === run.month) card.push(['Joining Date', e.joiningDate]);
-      if (l.deposit > 0) { card.push(['Security deposit deduction for 1st month', f(`${ps}E${p}`, l.deposit)]); card.push(['Deposit with company', f(`${ps}S${p}`, l.held)]); }
+      if (l.deposit > 0) { card.push(['Security deposit deduction for this month', f(`${ps}E${p}`, l.deposit)]); card.push(['Deposit with company', f(`${ps}S${p}`, l.held)]); }
       card.push(['Professional TAX', l.eff.ptax > 0 ? f(`${ps}I${p}`, l.eff.ptax) : 'No']);
       const [ca, cb] = i % 2 === 0 ? ['A', 'B'] : ['D', 'E'];
       const start = i % 2 === 0 ? rowL : rowR;

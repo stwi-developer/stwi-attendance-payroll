@@ -371,18 +371,31 @@ function classifyDay(
   if (holiday || weekend) return;
 
   // V1.9 (STWI 2 Oct): "Regularized" / "Regularised" anywhere in the Zoho status
-  // = HR approved the day in Zoho: a full present day (no leave, no review, no
-  // late mark) whatever the hours. With STWI half-day leave it is a 0.5 half
+  // = HR approved the day in Zoho: a full present day (no leave, no review)
+  // whatever the hours; the late mark stays (STWI 5 Nov). With STWI half-day leave it is a 0.5 half
   // day; with full-day STWI leave it stays 1 day of leave.
   if (isRegularized(row.status)) {
     const s = row.status.toLowerCase();
+    let fullLeave = false;
     if (/stwi\s*leave/.test(s)) {
       const half = /(first|second)\s*half|half\s*-?\s*day|0\.5\s*day/.test(s);
       d.status = half ? 'HALF_DAY' : 'STWI_LEAVE';
       d.leaveFraction = half ? 0.5 : 1;
       d.leaveType = half ? 'HALF_DAY' : 'FULL_DAY';
+      fullLeave = !half;
     } else {
       d.status = 'PRESENT';
+    }
+    // STWI 5 Nov (rule B): regularizing approves the day (no leave, no review) but
+    // does NOT remove a late check-in: late after the normal login time (09:30), or
+    // after the first-half login time (14:30) when the first half is the leave.
+    if (!fullLeave && firstMin != null) {
+      const firstHalf = /first\s*half/.test(s) || (!/second\s*half/.test(s) && /half\s*-?\s*day|0\.5\s*day/.test(s) && firstMin >= 12 * 60);
+      const expMin = firstHalf ? cfg.firstHalfLogin : cfg.normalLogin;
+      if (firstMin > expMin) {
+        d.late = true;
+        d.lateMinutes = Math.round(firstMin - expMin);
+      }
     }
     return;
   }
@@ -2135,7 +2148,7 @@ const totalHoursIdx = findCol(headers, [
 
     // ---------------------------------------------------------------- employee sheets
     const usedNames = new Set<string>(['payment sheet', 'email summary', 'manual review', 'calculation trace']);
-    type Line = { leaveEdited?: boolean; r: any; eff: ReturnType<typeof computePayroll>; sheet: string; deposit: number; other: number; held: number; mismatch: boolean; expected: number };
+    type Line = { leaveEdited?: boolean; cells: Record<string, number>; r: any; eff: ReturnType<typeof computePayroll>; sheet: string; deposit: number; other: number; held: number; mismatch: boolean; expected: number };
     const lines: Line[] = [];
     for (const r of payroll) {
       const e = r.employee;
@@ -2184,8 +2197,11 @@ const totalHoursIdx = findCol(headers, [
       const label = (row: number, text: string) => set(`N${row}`, text);
       label(2, 'Total Working Days'); set('O2', days);
       label(3, 'Leave'); set('O3', money(base.leaveUsed - halfCount * 0.5 - sandwichCount));
-      // KP-26: edited half-day count is written into the formula
-      label(4, 'Half Day'); set('O4', f(`0.5*${halfDays}`, halfDays * 0.5));
+      // KP-26: edited half-day count is written into the formula.
+      // STWI 5 Nov (option A): O4 stays the LEAVE days of the half days (0.5 each,
+      // as in STWI's sheet); the number of half days is shown next to it in P4.
+      label(4, 'Half Day (leave days)'); set('O4', f(`0.5*${halfDays}`, halfDays * 0.5));
+      { const c = ws.getCell('P4'); c.value = `${halfDays} half day${halfDays === 1 ? '' : 's'}`; c.font = font({ italic: true, color: { argb: 'FF808080' } }); }
       label(5, 'Late Mark'); set('O5', eff.lateLeaveDeduction); set('P5', lateCount);
       label(6, 'Early Check out'); set('O6', 0);
       label(7, 'Missing Selfie'); set('O7', 0);
@@ -2197,17 +2213,24 @@ const totalHoursIdx = findCol(headers, [
       if (base.notEmployedDays) { const c = ws.getCell('P11'); c.value = `incl. ${base.notEmployedDays} day(s) before joining`; c.font = font({ italic: true, color: { argb: 'FF808080' } }); }
       const ded = Math.max(0, totalLeave - eff.paidLeaveAllowance);
       label(12, 'Deduction Leave'); set('O12', overrides.deductionLeave != null && overrides.deductionLeave !== '' ? money(eff.deductionLeave - ddl) : f('O9-O10', ded));
-      label(13, 'Total Working Days'); set('O13', f('O2-O11-O12'));
+      // STWI 5 Nov: every formula is saved WITH its result, so the numbers also show
+      // in Excel's Protected View, phone / WhatsApp / Drive previews (they do not
+      // calculate). The results below are exactly what the formulas give.
+      const v10 = Math.min(eff.paidLeaveAllowance, totalLeave);
+      const v12 = typeof ws.getCell('O12').value === 'number' ? Number(ws.getCell('O12').value) : ded;
+      const v13 = days - ddl - v12;
+      label(13, 'Total Working Days'); set('O13', f('O2-O11-O12', v13));
       // KP-26: when the per-day salary or the leave deduction was edited, the
       // formulas use the edited figures (O20 = edited per day)
       const perDayEdited = overrides.dailySalary != null && overrides.dailySalary !== '';
       const ldaEdited = overrides.leaveDeductionAmount != null && overrides.leaveDeductionAmount !== '';
-      label(14, 'Paid Leave'); set('O14', f(perDayEdited ? 'O20*O10' : 'O19/O2*O10'), MONEY);
-      label(15, 'Leave Deducation'); set('O15', ldaEdited ? eff.leaveDeductionAmount : f(perDayEdited ? 'O20*(O12+O11)' : 'O19/O2*(O12+O11)'), MONEY);
+      const v20 = perDayEdited ? eff.dailySalary : eff.grossSalary / days;
+      label(14, 'Paid Leave'); set('O14', f(perDayEdited ? 'O20*O10' : 'O19/O2*O10', v20 * v10), MONEY);
+      label(15, 'Leave Deducation'); set('O15', ldaEdited ? eff.leaveDeductionAmount : f(perDayEdited ? 'O20*(O12+O11)' : 'O19/O2*(O12+O11)', v20 * (v12 + ddl)), MONEY);
       if (other) { label(17, 'Other Deduction'); set('O17', other, MONEY); }
       label(19, 'Total Payment'); set('O19', eff.grossSalary, MONEY);
-      label(20, 'Per Day'); set('O20', overrides.dailySalary != null && overrides.dailySalary !== '' ? eff.dailySalary : f('O19/O2'), MONEY);
-      label(21, 'Working Day Payment'); set('O21', f('O20*O13'), MONEY);
+      label(20, 'Per Day'); set('O20', perDayEdited ? eff.dailySalary : f('O19/O2', v20), MONEY);
+      label(21, 'Working Day Payment'); set('O21', f('O20*O13', v20 * v13), MONEY);
       label(22, 'Security Deposit Deducation'); set('O22', deposit, MONEY);
       label(23, 'Penalty'); set('O23', eff.penalty, MONEY);
       label(24, 'P.Tax'); set('O24', eff.ptax, MONEY);
@@ -2230,7 +2253,8 @@ const totalHoursIdx = findCol(headers, [
       key.forEach(([t, fill], i) => { const a = ws.getCell(`N${30 + i}`); a.value = t; a.border = BOX; a.font = font(); const b = ws.getCell(`O${30 + i}`); b.fill = fill; b.border = BOX; });
 
       for (const [col, w] of Object.entries({ A: 12, B: 16, C: 13, D: 18, E: 18, F: 9, G: 9, H: 9, I: 10, J: 30, K: 22, L: 20, N: 26, O: 12, P: 12 })) ws.getColumn(col).width = w;
-      lines.push({ r, eff, sheet, deposit, other, held: await this.deposits.getHeldAmount(r.employeeId), mismatch, expected, leaveEdited: perDayEdited || ldaEdited });
+      lines.push({ r, eff, sheet, deposit, other, held: await this.deposits.getHeldAmount(r.employeeId), mismatch, expected, leaveEdited: perDayEdited || ldaEdited,
+        cells: { O4: halfDays * 0.5, O5: eff.lateLeaveDeduction, O9: totalLeave, O10: v10, O11: ddl, O12: v12, O15: ldaEdited ? eff.leaveDeductionAmount : v20 * (v12 + ddl) } });
     }
 
     // ---------------------------------------------------------------- Payment Sheet
@@ -2248,9 +2272,10 @@ const totalHoursIdx = findCol(headers, [
       const renewal = ov.renewalDate ? (/^\d{4}-\d{2}-\d{2}/.test(String(ov.renewalDate)) ? new Date(`${String(ov.renewalDate).slice(0, 10)}T00:00:00Z`) : ov.renewalDate) : null;
       const vals: any[] = [
         i + 1, l.r.employee.name, Number(l.r.calendarDays) || calendarDays, l.eff.grossSalary, l.deposit, l.other || 0,
-        l.leaveEdited ? f(`${s}O15`, l.eff.leaveDeductionAmount) : f(`SUM(D${row}/C${row}*(K${row}+O${row}))`, l.eff.leaveDeductionAmount), l.eff.penalty || null, l.eff.ptax,
+        l.leaveEdited ? f(`${s}O15`, l.cells.O15) : f(`SUM(D${row}/C${row}*(K${row}+O${row}))`, l.eff.grossSalary / (Number(l.r.calendarDays) || calendarDays) * (l.cells.O12 + l.cells.O11)), l.eff.penalty || null, l.eff.ptax,
         l.mismatch ? l.eff.payableAmount : f(`SUM(D${row}-E${row}-F${row}-G${row}-H${row}-I${row})`, l.eff.payableAmount),
-        f(`${s}O12`), f(`${s}O4`), f(`${s}O5`), f(`${s}O10`), f(`${s}O11`), f(`${s}O9`),
+        // STWI 5 Nov: links saved with their results (shown in Protected View too)
+        f(`${s}O12`, l.cells.O12), f(`${s}O4`, l.cells.O4), f(`${s}O5`, l.cells.O5), f(`${s}O10`, l.cells.O10), f(`${s}O11`, l.cells.O11), f(`${s}O9`, l.cells.O9),
         join, renewal, l.held, ov.details || null,
       ];
       vals.forEach((v, c) => { const cell = paySheet.getCell(row, c + 1); cell.value = v; cell.border = BOX; cell.font = font(); });

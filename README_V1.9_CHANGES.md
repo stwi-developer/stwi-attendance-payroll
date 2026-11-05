@@ -200,7 +200,7 @@ Frontend: `cd frontend`, `npm run dev`.
 
 ## 9. V1.9 part 5 (2 Oct): "Regularized" = day approved in Zoho
 - **"Regularized" or "Regularised"** anywhere in the Zoho Status column (any case) means the day was approved in Zoho.
-  - Working day: **full present day**. No leave, no Manual Review, no late mark, whatever the hours. This also covers a missing check-in/check-out and "Absent / Regularized".
+  - Working day: **full present day**. No leave, no Manual Review, whatever the hours. (Late mark: see section 12, changed on 5 Nov.) This also covers a missing check-in/check-out and "Absent / Regularized".
   - With STWI half-day leave ("STWI Leave-(First/Second Half) … / Regularized"): **0.5 half day**, no review, no late mark. A full-day STWI Leave stays 1 day of leave.
 - **Notes**: a check-in or check-out note on a regularized day does **not** go to Manual Review. The attendance table shows the note with "· Regularized – note accepted".
   - Notes on days that are not regularized still go to Manual Review, as before.
@@ -262,3 +262,22 @@ The decisions are listed in the project doc `known-problems-decisions-2026-10-21
 - **KP-40** The "No leave" filters are fixed.
 
 **Release:** Render applies the migration. Upload the open month again so the new attendance rules apply.
+
+## 11. V1.9 part 7 (5 Nov): Excel export fixes
+- **Numbers are visible in every viewer.** Every formula in the export is now saved together with its result. Before this change, Excel's Protected View, phone and WhatsApp/Drive previews showed these cells empty until "Enable Editing" was clicked:
+  - employee sheets: Total Working Days, Paid Leave, Leave Deducation, Per Day, Working Day Payment;
+  - Payment Sheet: columns K–P.
+
+  The formulas are unchanged, so editing in Excel still recalculates.
+- **Half Day row (STWI option A).** O4 still shows the leave days of the half days (0.5 each, as in STWI's sheet: 7 half days = 3.5). The label now says "Half Day (leave days)", and P4 shows the number of half days ("7 half days").
+- Both "Export Excel" buttons on the month page call the same export, so they always produce the same workbook for the same data.
+- No database change.
+
+## 12. V1.9 part 8 (5 Nov): a Regularized day keeps its late mark (STWI rule B)
+- Regularizing in Zoho still approves the day: full present day (or 0.5 with STWI half-day leave), no leave, no Manual Review, notes accepted.
+- **New:** the late mark is no longer removed.
+  - Late after the normal login time (Settings, default 09:30).
+  - Late after the first-half login time (default 14:30) when the first half is the leave.
+  - A full-day STWI Leave / Regularized has no late mark.
+- October 2026 example (STWI file): 4 days become late: Aditya 07 Oct (09:35), Aryan 12 Oct (09:57), Dixit 24 Oct (09:40), Falguni 24 Oct (09:43). Nobody reaches 3 late marks, so October pay does not change.
+- Late marks are set when a file is uploaded, so **upload the open month's files again** after updating. No database change.
